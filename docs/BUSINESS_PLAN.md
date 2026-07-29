@@ -4,7 +4,7 @@
 
 LINDA is a white-label B2B SaaS platform that automatically transcribes customer calls and uses AI to generate actionable follow-ups, coaching insights, and sentiment analysis. Sold to companies running sales and customer-support operations, the platform is designed to be resold under their own brand to their end customers or used internally to drive team performance.
 
-The conversation intelligence market is projected to exceed $40B by 2030. LINDA targets the underserved mid-market segment — companies with 10–500 reps — that are priced out of enterprise solutions like Gong and Chorus but need more than basic call recording. Our white-label model creates a second revenue stream by enabling telephony providers, CRM vendors, and BPOs to embed call intelligence as a native feature.
+The conversation intelligence market is projected to exceed $40B by 2030. LINDA's immediate go-to-market leads with two motions: **the channel** — white-label wholesale providers (e.g. Reinvent Telecom/Saddleback), TSD master agents, MSP resellers, vertical SaaS/CRM vendors, and BPOs who embed call intelligence as a native feature under their own brand — and **SMB direct** — small teams (typically under ~50 employees, 5–25 seats) that enterprise platforms like Gong and Chorus ignore entirely. The underserved mid-market (10–500 reps, priced out of enterprise suites) remains the expansion target once channel and SMB traction establish reference logos and reference pricing. The platform is always available for individual direct purchase at any size.
 
 ---
 
@@ -26,25 +26,55 @@ The conversation intelligence market is projected to exceed $40B by 2030. LINDA 
 
 ### 3.1 Primary Segments
 
-| Segment | Profile | Deal Size (ARR) | Volume |
-|---------|---------|-----------------|--------|
-| **Mid-market Sales Teams** | 10–500 reps, B2B sales orgs, SDR/AE teams | $12K–$120K | High |
-| **Customer Support / Contact Centers** | 20–1,000 agents, inbound call centers | $24K–$300K | High |
-| **White-Label Partners** | Telephony providers, CRM vendors, BPOs | $50K–$500K+ | Lower count, higher value |
+*Ordered by go-to-market priority: channel and SMB are the immediate motions; mid-market
+follows once reference logos exist. The platform is always available for direct purchase
+individually, at any company size.*
+
+| Priority | Segment | Profile | Deal Size (ARR) | Volume |
+|----------|---------|---------|-----------------|--------|
+| **Now** | **White-Label / Channel Partners** | White-label wholesale providers, TSDs/master agents, MSP resellers, CPaaS, vertical CRM/SaaS vendors, BPOs | $50K–$500K+ | Lower count, higher value |
+| **Now** | **SMB Sales & Service Teams** | Under ~50 employees, 5–25 seats; owner/GM-led buying; self-serve or light-touch | $2K–$25K | High |
+| **Later** | **Mid-market Sales Teams** | 10–500 reps, B2B sales orgs, SDR/AE teams | $12K–$120K | High |
+| **Later** | **Customer Support / Contact Centers** | 20–1,000 agents, inbound call centers | $24K–$300K | High |
 
 ### 3.2 Ideal Customer Profile (Direct Sales)
 
-- **Company size:** 50–500 employees
-- **Annual revenue:** $10M–$500M
+**Immediate ICP — SMB:**
+
+- **Company size:** under ~50 employees (5–25 seats). Willing to stretch to ~200 employees
+  when the circumstances are right — e.g. a compliance-driven buyer or a warm channel intro.
+- **Industries:** phone-heavy SMB verticals — independent insurance agencies (CMS Medicare
+  call-recording mandates), legal intake, home services, medical/dental offices, fitness/
+  wellness studios (proven via the live Flex gym motion), local financial services
+- **Decision makers:** owner, GM, sales manager — one- or two-call close
+- **Motion:** self-serve or light-touch (existing Sandbox/Starter tiers); time-to-value
+  measured in hours, not quarters
+- **Wedge:** a compliance or missed-revenue driver (recorded calls nobody reviews, missed
+  follow-ups, no coaching capacity) — not a platform-evaluation committee
+
+**Expansion ICP — mid-market (later phase):**
+
+- **Company size:** 50–500 employees; **Annual revenue:** $10M–$500M
 - **Industries:** SaaS, financial services, insurance, healthcare, real estate, professional services
 - **Tech stack:** Already using Salesforce/HubSpot, Zoom/Teams, Twilio/RingCentral
 - **Decision makers:** VP Sales, VP Customer Success, CRO, Head of Support
 - **Budget:** $50–$150/seat/month
 
-### 3.3 Ideal White-Label Partner
+### 3.3 Ideal White-Label / Channel Partner (Immediate Priority)
 
+*Channel taxonomy, in rough order of leverage:*
+
+- **White-label wholesale providers / channel enablers** (e.g. Reinvent Telecom, a
+  Saddleback Communications company) — platforms whose entire business is packaging
+  rebrandable services for downstream resellers; one signing exposes LINDA to their whole
+  reseller base
+- **TSDs / master agents** (Telarus, AVANT, Intelisys, Sandler, Bridgepointe) — own the
+  reseller relationships for all of UCaaS
+- **MSP resellers / sub-agents** — the individual shops that sell to end SMBs under the
+  wholesale providers above
 - **CPaaS providers** (Twilio competitors, regional telecoms) wanting to add AI features
-- **CRM vendors** (vertical CRMs) wanting native call intelligence
+- **CRM / vertical SaaS vendors** wanting native call intelligence (the Flex gym-SaaS
+  integration is the working template)
 - **BPO / outsourced call centers** wanting to offer analytics to their clients
 - **Revenue intelligence resellers** wanting a platform they can brand
 
@@ -344,7 +374,7 @@ The market has a clear gap:
 ### Strengths
 - **Only turnkey white-label product in market** — NICE/Verint/CallMiner can't be white-labeled; Symbl.ai/Deepgram are raw APIs with no UI. We are the only complete product that partners can rebrand and resell.
 - **AI-native architecture** — built around Claude's reasoning capabilities rather than retrofitting generative AI onto legacy speech analytics platforms (as NICE, Verint, and CallMiner are doing)
-- **Dual-channel GTM** — direct sales to mid-market teams AND white-label to CPaaS/CRM/BPO partners, creating two independent revenue streams with different risk profiles
+- **Channel-first GTM with a direct floor** — white-label to wholesale providers/TSDs/CPaaS/CRM/BPO partners as the lead motion, SMB self-serve direct as an independent second stream, and mid-market direct as the later expansion — three revenue streams with different risk profiles
 - **Telephony-agnostic** — works with any phone system, unlike AWS Contact Lens (Connect-only), Google CCAI (GCP-only), or Microsoft (Dynamics-only)
 - **Speed-to-deploy** — days vs. 3–6 months for NICE/Verint/CallMiner, giving us a structural advantage in mid-market sales cycles
 - **Pluggable ASR engines** — not locked to one transcription vendor; can use Deepgram for speed, Whisper for cost, or AssemblyAI for features, optimizing cost/quality per customer
@@ -419,40 +449,51 @@ The market has a clear gap:
 
 ## 7. Go-To-Market Strategy
 
-### 7.1 Phase 1 — Product-Led Growth (Months 1–6)
+### 7.1 Phase 1 — Channel Ignition + SMB Beachhead (Months 1–6)
 
-**Goal:** 500 free users, 50 paying customers, validate product-market fit
+**Goal:** 2 signed white-label partners (1 wholesale-provider flagship), 50 paying SMB
+customers, validate both motions
 
-- Launch free tier with generous limits (5 calls/month)
-- Content marketing: SEO-optimized blog posts targeting "call transcription software", "AI sales coaching", "call center analytics"
-- Developer marketing: API docs, SDKs, developer blog, Hacker News launch
-- Product Hunt launch
-- Community: Discord/Slack community for users and partners
-- Social proof: Case studies from design partners (recruit 5–10 pre-launch)
+*Channel track (lead motion — the partner program is build-complete; this phase opens it):*
+- Sign the flagship white-label wholesale provider (Reinvent Telecom profile) and one
+  vertical-SaaS embed partner (the Flex integration is the working template)
+- Open conversations with one TSD/master agent (Telarus/AVANT/Intelisys profile)
+- Marketplace/channel discovery surfaces: Genesys AppFoundry, RingCentral App Gallery
+- Presence at channel events (Channel Partners Conf & Expo) over end-buyer conferences
+
+*SMB direct track (independent second stream):*
+- Launch free tier with generous limits (5 calls/month); self-serve Sandbox/Starter
+- Content marketing: SEO targeting SMB phone-heavy verticals ("call transcription
+  software", "AI sales coaching", "medicare call recording compliance")
+- Product Hunt launch; founder-led LinkedIn
+- Social proof: case studies from design partners (recruit 5–10 pre-launch, SMB-weighted)
 
 **Channels:**
 | Channel | Activity | Goal |
 |---------|----------|------|
-| Organic search | 2 blog posts/week, landing pages per use case | 10K monthly visitors by month 6 |
+| Partner outreach | Flagship wholesale provider + TSD conversations | 2 signed, 10 in pipeline |
+| Organic search | 2 blog posts/week, landing pages per SMB vertical | 10K monthly visitors by month 6 |
 | Product Hunt | Launch + follow-up features | 500 signups |
-| LinkedIn | Founder thought leadership, sales tips content | 5K followers |
+| LinkedIn | Founder thought leadership, channel + SMB content | 5K followers |
 | Developer community | API tutorials, open-source contributions | 200 API users |
 
-### 7.2 Phase 2 — Sales-Assisted Growth (Months 6–12)
+### 7.2 Phase 2 — Channel Scale + SMB Verticalization (Months 6–12)
 
-**Goal:** $500K ARR, 10 white-label partners in pipeline
+**Goal:** $500K ARR (majority channel/SMB), 10 white-label partners in pipeline
 
-- Hire 2 AEs focused on mid-market direct sales
-- Hire 1 Partner Manager focused on white-label deals
-- Outbound prospecting to sales and support leaders at target companies
-- Conference presence: SaaStr, Customer Contact Week, Twilio SIGNAL
-- Partner program launch: Telephony providers, CRM vendors, BPOs
+- Hire 1 Partner Manager as first GTM hire; second GTM hire supports partner enablement
+  or SMB growth, whichever motion is winning
+- Scale the partner program: deal reg, portal, certification, enablement kit
+- Verticalize SMB playbooks (insurance agencies, legal intake, home services, fitness)
+- Conference presence: Channel Partners Conf & Expo, Customer Contact Week, Twilio SIGNAL
 - Webinar series: "AI-Powered Sales Coaching" with industry guests
 
-### 7.3 Phase 3 — Channel Acceleration (Months 12–24)
+### 7.3 Phase 3 — Mid-Market Expansion + Channel Acceleration (Months 12–24)
 
-**Goal:** $3M ARR, 5 live white-label partners, 50 in pipeline
+**Goal:** $3M ARR, 5 live white-label partners, 50 in pipeline, first mid-market direct logos
 
+- Hire mid-market AEs once channel/SMB reference logos and reference pricing exist —
+  mid-market direct starts here, sold against proof, not promises
 - Scale partner program with dedicated enablement team
 - Co-marketing with partners (joint webinars, case studies, co-branded content)
 - Launch marketplace listings (Salesforce AppExchange, HubSpot Marketplace, Twilio Marketplace)
@@ -474,7 +515,23 @@ The market has a clear gap:
 
 ## 8. Sales Strategy
 
-### 8.1 Direct Sales Motion
+*Ordered by priority: the white-label motion leads, SMB self-serve runs continuously
+underneath it, and the assisted direct motion below applies to SMB-stretch and (later)
+mid-market deals.*
+
+### 8.1 White-Label Sales Motion (Lead)
+
+```
+Partner identification (wholesale provider / TSD / CPaaS / vertical CRM / BPO)
+    → Technical discovery: API requirements, branding needs, volume
+    → POC: Deploy white-labeled instance with partner branding
+    → Integration sprint: Connect to partner's telephony/CRM
+    → Pilot: 30-day pilot with partner's customers
+    → Contract: Revenue share or platform license agreement
+    → Launch: Co-marketing announcement, enablement training
+```
+
+### 8.2 Direct Sales Motion (SMB now; mid-market later)
 
 ```
 Inbound lead (free signup / demo request)
@@ -491,18 +548,6 @@ Inbound lead (free signup / demo request)
 - **Live demo environment:** Pre-loaded with sample calls showing full AI analysis
 - **Competitive battle cards:** Gong vs. LINDA, Fireflies vs. LINDA
 - **Security whitepaper:** SOC 2, encryption, data residency details
-
-### 8.2 White-Label Sales Motion
-
-```
-Partner identification (telephony/CRM vendor, BPO)
-    → Technical discovery: API requirements, branding needs, volume
-    → POC: Deploy white-labeled instance with partner branding
-    → Integration sprint: Connect to partner's telephony/CRM
-    → Pilot: 30-day pilot with partner's customers
-    → Contract: Revenue share or platform license agreement
-    → Launch: Co-marketing announcement, enablement training
-```
 
 ---
 
@@ -569,7 +614,7 @@ Partner identification (telephony/CRM vendor, BPO)
 |------|--------|------------|------------|
 | Gong launches SMB tier | High | Medium | Differentiate on white-label, speed to value, and pricing transparency |
 | Claude API outage / price hike | High | Low | Multi-model support (Claude + Gemini + open-source fallback), negotiate volume pricing |
-| Slow white-label sales cycle | Medium | High | Build direct revenue first, use partner pipeline as upside not dependency |
+| Slow white-label sales cycle | Medium | High | SMB self-serve direct revenue runs as an independent floor while partner deals cycle; partner program is build-complete so cycles start immediately, not after a build phase. Residual risk accepted: channel-first means partner timing drives the topline — the SMB stream is the hedge, and mid-market direct opens in Phase 3 as a second hedge |
 | Data breach / security incident | Critical | Low | SOC 2 from day one, pen testing, bug bounty, encryption at rest/transit |
 | High churn in first year | High | Medium | Invest in onboarding, ensure time-to-value < 24 hours, NPS surveys, success team |
 | Regulatory changes (recording consent) | Medium | Medium | Built-in consent workflows, data residency options, legal review per market |

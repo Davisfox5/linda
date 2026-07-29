@@ -42,9 +42,9 @@ Two things make it a business, not a feature:
    conversations into tracked, assigned follow-ups that flow into the CRM the team already
    uses. The value is in what happens *after* the call.
 2. **It is multi-tenant and white-label from the ground up.** The same platform can be
-   deployed as LINDA's own product to a mid-market sales team, *or* rebranded end-to-end
-   (custom domain, logo, "invisible LINDA") and resold by a telecom, UCaaS provider, or
-   BPO as their own AI feature.
+   deployed as LINDA's own product to a sales team of any size — from a 5-seat agency to a
+   500-rep org — *or* rebranded end-to-end (custom domain, logo, "invisible LINDA") and
+   resold by a telecom, UCaaS provider, or BPO as their own AI feature.
 
 **The wedge:** the conversation-intelligence market is projected to exceed **$40B by 2030**,
 but it is barbell-shaped. Enterprise incumbents (NICE, Verint, CallMiner) cost $150K–$2M+
@@ -54,16 +54,23 @@ offers a complete, rebrandable product to the underserved mid-market and to the 
 of telecom/CRM/BPO partners who want to sell AI call intelligence but will never build it.**
 LINDA occupies that gap.
 
-**Two revenue engines:**
-- **Direct** — mid-market sales & support teams (10–500 reps), $12K–$300K ARR each.
-- **White-label / channel** — CPaaS, UCaaS, master agents, and BPOs reselling under their
-  brand, $25K–$500K+ ARR each. *This is expected to become the majority of revenue.*
+**Two revenue engines — channel leads, direct floors:**
+- **White-label / channel (lead engine, opening now)** — white-label wholesale providers,
+  CPaaS, UCaaS, master agents/TSDs, vertical SaaS/CRM vendors, and BPOs reselling under
+  their brand, $25K–$500K+ ARR each. *Expected to become the majority of revenue; the
+  partner program is build-complete and this is the immediate motion.*
+- **Direct (SMB now, mid-market later)** — self-serve/light-touch SMB teams (typically
+  under ~50 employees, 5–25 seats) provide an independent revenue floor and product proof;
+  mid-market sales & support teams (10–500 reps, $12K–$300K ARR each) open as the
+  expansion motion once channel and SMB reference logos exist. The platform remains
+  individually purchasable at any size throughout.
 
 **The financial shape** (modeled, illustrative): **$500K → $3M → $12M** revenue across the
 first three years at **75–80% gross margin**, with net income turning positive by Year 2.
 
-**The ask:** a seed / seed-extension round to fund the direct-sales beachhead and stand up
-the first cohort of white-label distributors. See [§11](#11-target-investors-named--the-ask).
+**The ask:** a seed / seed-extension round to stand up the first cohort of white-label
+distributors and fund the SMB self-serve beachhead, with mid-market direct sales layered
+on once reference logos exist. See [§11](#11-target-investors-named--the-ask).
 
 ---
 
@@ -87,7 +94,7 @@ turns conversations into assigned, tracked outcomes.
 | Layer | Definition | Estimate |
 |---|---|---|
 | **TAM** | Global conversation-intelligence / contact-center AI | **>$40B by 2030** |
-| **SAM** | Mid-market sales & support orgs (10–500 reps) + the CPaaS/UCaaS/BPO channel that serves them | Multi-billion; the segment priced out of NICE/Verint but underserved by branded-only AI-native tools |
+| **SAM** | The white-label channel (wholesale providers, TSDs, CPaaS/UCaaS, vertical SaaS, BPOs) + the SMB and mid-market sales & support orgs (5–500 reps) it serves | Multi-billion; the segments priced out of NICE/Verint but underserved by branded-only AI-native tools — and, at the small end, ignored by Gong entirely |
 | **SOM (3-yr target)** | ~400 direct customers + 10 live white-label distributors | **~$12M ARR** (see [§10](#10-financial-model)) |
 
 **Why now:**
@@ -256,28 +263,40 @@ deep dives in [BUSINESS_PLAN.md §4](BUSINESS_PLAN.md).)
 
 **One funnel, three motions, gated on milestones (not calendar).** These reconcile the free
 tier, the consultative "45-Day Preview" on the marketing site, and the channel program.
+**Sequencing: channel and SMB direct open together in Phase 1; mid-market direct is the
+Phase 3 expansion**, sold against the reference logos and reference pricing the first two
+motions establish. The platform remains individually purchasable at any size in every phase.
 
-### Phase 1 — Beachhead & Product-Market Fit
-**Gate to exit:** ~50 paying direct customers; 5–10 reference case studies; repeatable
-"45-Day Preview" close.
-- **Top of funnel:** free 14-day sandbox + PLG content (SEO on "call transcription software,"
-  "AI sales coaching," "call center analytics"), Product Hunt, founder-led LinkedIn, dev
-  marketing (API docs, SDKs).
-- **Close motion:** the consultative **45-Day Preview** — Discovery → Custom Build (tuned to
-  the customer's industry/terminology) → Proof of Concept on *their own* call data →
-  Integration & live trial → "You Decide" pricing proposal, no lock-in. This is the direct
-  differentiator vs. Gong's high-pressure enterprise cycle.
+### Phase 1 — Channel Ignition + SMB Beachhead
+**Gate to exit:** 2 live white-label partners (incl. one wholesale-provider flagship);
+~50 paying SMB customers; 5–10 reference case studies.
+- **Channel track (lead):** the partner program is build-complete (see [§8.3](#83-partner-enablement-ready-now)) —
+  open it now. Sign the flagship white-label wholesale provider (Reinvent Telecom profile)
+  and one vertical-SaaS embed (the live Flex integration is the template). Start one
+  TSD/master-agent conversation. Presence at Channel Partners Conf & Expo.
+- **SMB direct track:** free 14-day sandbox + PLG content (SEO on "call transcription
+  software," "AI sales coaching," and SMB-vertical compliance terms like "medicare call
+  recording"), Product Hunt, founder-led LinkedIn, dev marketing (API docs, SDKs).
+  Self-serve Sandbox/Starter close; owner/GM buyers; time-to-value in hours.
+- **Close motion for larger/stretch deals:** the consultative **45-Day Preview** —
+  Discovery → Custom Build → Proof of Concept on *their own* call data → Integration & live
+  trial → "You Decide" pricing proposal, no lock-in.
 - **Proof asset:** run the POC on the prospect's real calls — the demo *is* their data.
 
-### Phase 2 — Sales-Assisted Growth + Channel Ignition
-**Gate to exit:** ~$500K ARR; 2 live white-label partners; 10 partners in pipeline.
-- Hire 2 mid-market AEs + 1 Partner Manager.
-- Conference presence where the buyers *and* the channel are: SaaStr, Customer Contact Week,
-  Twilio SIGNAL, and — critically — the master-agent/TSD events (Channel Partners Conf & Expo).
-- Launch the partner program (deal reg, portal, certification, enablement kit).
+### Phase 2 — Channel Scale + SMB Verticalization
+**Gate to exit:** ~$500K ARR (majority channel + SMB); 10 partners in pipeline.
+- Hire 1 Partner Manager first; next GTM hire follows whichever motion is winning.
+- Scale the partner program (deal reg, portal, certification, enablement kit); co-selling
+  with early partners.
+- Verticalize the SMB playbooks (insurance agencies, legal intake, home services, fitness).
+- Conference presence where the channel is: Channel Partners Conf & Expo first, then
+  Customer Contact Week, Twilio SIGNAL.
 
-### Phase 3 — Channel Acceleration (Primary Revenue Engine)
-**Gate to exit:** ~$3M ARR; 5+ live white-label distributors; 50 in pipeline.
+### Phase 3 — Mid-Market Expansion + Channel Acceleration
+**Gate to exit:** ~$3M ARR; 5+ live white-label distributors; 50 in pipeline; first
+mid-market direct logos.
+- **Mid-market direct opens here:** hire mid-market AEs and run the 45-Day Preview against
+  the ICP in [§7](#7-target-customers-named), sold with channel/SMB proof in hand.
 - Scale the partner program with dedicated enablement; co-marketing + MDF.
 - Marketplace listings: Salesforce AppExchange, HubSpot Marketplace, Twilio Marketplace,
   Genesys AppFoundry, RingCentral App Gallery.
@@ -296,10 +315,16 @@ reference price the channel sells against.
 
 ## 7. Target Customers (Named)
 
-*Illustrative target-account list by vertical — mid-market orgs (50–500 employees, $10M–$500M
-revenue) with sizable inside-sales or contact-center operations, already on
-Salesforce/HubSpot + Zoom/Teams + Twilio/RingCentral. Buyers: VP Sales, CRO, VP Customer
-Success, Head of Support. Presented as target profiles, not committed pipeline.*
+*Sequencing note: the immediate direct motion is **SMB** (typically under ~50 employees,
+5–25 seats — independent insurance agencies with CMS Medicare recording mandates, legal
+intake, home services, medical/dental, fitness studios per the live Flex motion — with
+stretch to ~200 employees when a compliance driver or warm channel intro makes the
+circumstances right). The vertical table below is the **mid-market expansion ICP for
+Phase 3**, retained because the channel partners signed in Phase 1–2 sell into exactly
+these accounts — mid-market orgs (50–500 employees, $10M–$500M revenue) with sizable
+inside-sales or contact-center operations, already on Salesforce/HubSpot + Zoom/Teams +
+Twilio/RingCentral. Buyers: VP Sales, CRO, VP Customer Success, Head of Support. Presented
+as target profiles, not committed pipeline.*
 
 | Vertical | Why they fit | Representative target accounts |
 |---|---|---|
@@ -316,16 +341,23 @@ early logos are those with (a) a measurable revenue metric tied to call outcomes
 compliance or QA driver that makes the buy non-discretionary.
 
 **Anti-targets:** Fortune 500 contact centers (owned by NICE/Verint; sales cycle too long for
-our stage) and solo/prosumer users (served by Fireflies/Otter; wrong unit economics).
+our stage) and solo/prosumer *individual* users (served by Fireflies/Otter; wrong unit
+economics). Note the distinction: SMB *teams* (5–25 seats with a compliance or
+missed-revenue driver) are now a primary target; a single rep wanting personal note-taking
+is not.
 
 ---
 
 ## 8. White-Label / Channel Strategy (Named Partners)
 
-**This is the primary long-term revenue engine.** The distribution already exists — the U.S.
-UCaaS/telecom market sells through **master agents / Technology Solutions Distributors (TSDs)**
-and thousands of MSPs. LINDA plugs in as the "AI call intelligence" line item in catalogs
-that already have a salesforce and a customer base.
+**This is the primary revenue engine, and it opens in Phase 1 — not after a direct-sales
+proving period.** The distribution already exists — the U.S. UCaaS/telecom market sells
+through **master agents / Technology Solutions Distributors (TSDs)** and thousands of MSPs.
+LINDA plugs in as the "AI call intelligence" line item in catalogs that already have a
+salesforce and a customer base. The white-label wholesale providers (Reinvent
+Telecom/Saddleback profile) are the tip of the spear: their entire business is packaging
+rebrandable services for downstream resellers, so one signing activates a whole reseller
+network.
 
 ### 8.1 Named target channel partners
 
@@ -353,7 +385,8 @@ that already have a salesforce and a customer base.
 
 Partner portal (deal reg, reporting, billing), 4-hour engineer certification, sales
 enablement kit (decks, battlecards, ROI tool), co-selling assist (Premier+), roadmap input
-(Elite). The program structure is built; opening cadence is the team's call.
+(Elite). The program structure is built; **the decision has been made to open it in
+Phase 1** — channel is the lead motion, not a later-phase upside.
 
 ---
 
@@ -380,8 +413,9 @@ enablement kit (decks, battlecards, ROI tool), co-selling assist (Premier+), roa
 - Google CASA assessment + OAuth verification in progress for Gmail/Calendar/Contacts scopes.
 
 **Honest framing for investors:** the technical risk is largely retired — this is a built,
-multi-tenant platform, not a prototype. The open risk is **commercial**: proving the direct
-beachhead and signing the first white-label distributors. That is precisely what the raise funds.
+multi-tenant platform, not a prototype. The open risk is **commercial**: signing the first
+white-label distributors and proving the SMB self-serve beachhead. That is precisely what
+the raise funds.
 
 ---
 
@@ -454,14 +488,17 @@ These funds have already made money in this exact category and understand the bu
 
 ### 11.4 The ask (fill in the specifics)
 
-- **Round / amount:** seed / seed-extension — sized to fund 2 AEs + 1 Partner Manager + 1–2
-  engineers through the Phase 2 gate ($500K ARR, 2 live partners). *[Insert target raise and
+- **Round / amount:** seed / seed-extension — sized to fund 1 Partner Manager + 1 growth
+  hire (partner enablement or SMB growth, whichever motion is winning) + 1–2 engineers
+  through the Phase 2 gate ($500K ARR, 2 live partners). *[Insert target raise and
   valuation.]*
-- **Use of funds:** ~55% GTM (direct AEs, partner manager, enablement, events), ~30%
-  engineering (CRM/email/Teams completion, partner portal hardening), ~15% G&A + compliance
-  (SOC 2 audit renewal, CASA, HIPAA BAA readiness).
-- **Milestones this round buys:** repeatable 45-Day Preview close; first 2 signed Elite/Premier
-  distributors; verticalized reference customers in 2–3 target industries.
+- **Use of funds:** ~55% GTM (partner manager, enablement, channel events, SMB growth),
+  ~30% engineering (CRM/email/Teams completion, partner portal hardening), ~15% G&A +
+  compliance (SOC 2 audit renewal, CASA, HIPAA BAA readiness).
+- **Milestones this round buys:** first 2 signed Elite/Premier distributors (incl. one
+  wholesale-provider flagship); ~50 paying SMB customers via self-serve; verticalized
+  reference customers in 2–3 target industries; repeatable 45-Day Preview close for
+  stretch deals.
 - **Why us, why now:** the product is built and multi-tenant-safe (technical risk retired);
   the market gap is structural (no one else is turnkey *and* white-label); and the channel that
   distributes it already exists and is actively shopping for AI parity.
@@ -492,9 +529,9 @@ at seed. Emphasize any telecom/UCaaS-channel relationships and applied-AI depth.
 
 | Risk | Impact | Likelihood | Mitigation |
 |---|---|---|---|
-| Gong / incumbent launches SMB tier | High | Medium | Differentiate on white-label, speed-to-value, price transparency |
+| Gong / incumbent launches SMB tier | High | Medium | Differentiate on white-label, speed-to-value, price transparency — and on channel reach an SMB tier alone doesn't buy |
 | Claude API outage / price hike | High | Low | Single-catalog model routing + failover; multi-model optionality; volume pricing |
-| Slow white-label sales cycles | Medium | High | Build direct revenue first; treat channel as upside, not dependency |
+| Slow white-label sales cycles | Medium | High | Accepted as the cost of channel-first: SMB self-serve revenue is the independent floor while partner deals cycle; the program is build-complete so cycles start day one; mid-market direct opens in Phase 3 as a second hedge |
 | Security incident (multi-tenant) | Critical | Low | RLS + Qdrant choke point, SOC 2, pen testing, bug bounty |
 | High first-year churn | High | Medium | <24h time-to-value, onboarding investment, success team, NPS loop |
 | Recording-consent regulation tightens | Medium | Medium | Built-in consent workflows, data-residency options, per-market legal review |

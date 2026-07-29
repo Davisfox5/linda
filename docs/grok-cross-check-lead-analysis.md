@@ -256,17 +256,35 @@ Premium Service Brands (franchisor).
 
 ### 7.1 Revised top targets
 
-| Rank | Target | Motion | Why | Source of pick |
-|---|---|---|---|---|
-| 1 | **AgencyBloc** | Vertical-CRM OEM/embed | CMS compliance driver, new native VoIP capturing calls with no intelligence layer, partner program opened 2026-07-27, PE growth mandate | Grok pick, Claude reframe + new hooks |
-| 2 | **Reinvent Telecom** | White-label flagship | Repo's own named flagship; confirmed appetite for assembling third-party tech into partner-branded AI products; thin CI today | Repo + Grok convergence, Claude verification |
-| 3 | **Senior Market Sales / Ritter** (run as one Medicare-FMO play) | Embed-OEM | "Recording without intelligence": CMS-mandated recordings sitting in dumb storage across thousands of agents | Claude (net-new) |
-| 4 | **Spring Venture Group** | Direct | Compliance + coaching-culture + scale; direct proof-logo for the Medicare wedge | Claude (net-new) |
-| 5 | **Crexendo Marketplace** | Channel listing | Purpose-built third-party CI distribution door across 3,500+ providers | Claude (net-new) |
+**2026-07-29 update — re-ranked for the channel-first + SMB pivot.** Follow-up sizing
+research showed most of the original Tier-1 "direct" targets are not SMBs, and two sit
+under enterprise parents. Target-market strategy was updated accordingly (see
+`BUSINESS_PLAN.md` §3, `INVESTOR_BUSINESS_PLAN.md` §6–8): immediate motions are channel
+partners and SMB direct; mid-market comes later.
 
-Demoted, kept on watch: CompanyCam & Triple Whale (Gong incumbents; revisit at renewal or
-via the GTM-systems re-evaluation window), SkySwitch→BCM One group. Dropped: Level AI,
-Talkdesk, Intermedia, Nooks, Profound, Messangi/Enabld, Viirtue (conflict or misfit).
+Size/ownership findings for the non-channel targets (sources in appendix):
+
+| Target | Size | SMB? |
+|---|---|---|
+| AgencyBloc | ~125–140 employees, est. $15–26M rev (PE-backed, Resurgens) | Yes — SMB/lower mid-market |
+| Senior Market Sales | ~300–700 employees, ~$77M rev — **owned by Alliant Insurance Services** | No — mid-market unit, enterprise parent |
+| Ritter Insurance Marketing | ~250–280 employees — **owned by Integrity Marketing Group** | No — mid-market unit, enterprise parent |
+| Spring Venture Group | ~1,387 employees (early 2026) | No — upper mid-market |
+
+Re-ranked list under the channel-first + SMB strategy:
+
+| Rank | Target | Motion | Why | Phase |
+|---|---|---|---|---|
+| 1 | **Reinvent Telecom** | White-label wholesale flagship | The repo's named flagship and the purest expression of the channel-first motion: their whole business is packaging rebrandable services for downstream MSP resellers; confirmed appetite for assembling third-party tech; thin CI today | Now |
+| 2 | **AgencyBloc** | Vertical-CRM OEM/embed | Itself an SMB-sized company; its customers are SMB insurance agencies (the new direct ICP); CMS compliance driver; native VoIP now capturing calls with no intelligence layer; partner program opened 2026-07-27 | Now |
+| 3 | **Crexendo Marketplace** | Channel listing | Purpose-built third-party CI distribution door across 3,500+ white-label providers — channel leverage without a bespoke integration | Now |
+| 4 | **SMB direct wedge: independent Medicare/benefits agencies** (via AgencyBloc ecosystem + direct) | SMB direct | CMS recording mandate + no intelligence layer, at 5–25 seat scale; self-serve/light-touch close; feeds case studies the channel resells | Now |
+| 5 | **Senior Market Sales / Ritter** (Medicare-FMO embeds) | Embed-OEM | Still the strongest "recording without intelligence" wedge, but both sit under enterprise parents (Alliant, Integrity) — expect longer procurement; run after a Medicare-flavored proof point exists | Later (first mid-tier wave) |
+| 6 | **Spring Venture Group** | Direct | ~1,400 employees — now a *later-phase* mid-market/enterprise-lite pursuit per the revised sequencing, entered with SMB Medicare proof in hand | Later |
+
+Demoted, kept on watch: CompanyCam & Triple Whale (Gong incumbents; also mid-market —
+later-phase by both criteria), SkySwitch→BCM One group. Dropped: Level AI, Talkdesk,
+Intermedia, Nooks, Profound, Messangi/Enabld, Viirtue (conflict or misfit).
 
 ### 7.2 Outreach mechanics (Grok scaffolding, corrected)
 
@@ -304,3 +322,4 @@ have been checked; absence of evidence gets labeled *unknown*.
 - White-label vetting: intermedia.com/products/ai; talkdesk.com Copilot/QM Assist; thelevel.ai; viirtue.com/lp/sentiment-analysis/; reinventtelecom.com (AI Receptionist PR; Telnyx case study); skyswitch.com; messangi.com; enabld.tech
 - Net-new leads: netsapiens.com (Crexendo Marketplace launch + CI-in-marketplace article); who13.com (SMS call-recording PR); ritterim.com (CallVault posts); springventuregroup.com; alertcommunications.com; bicomsystems.com (PBXware v8 AI Hub); businesswire.com (Wrench–Lace AI, 2026-03-03); gomomentum.com; telinta.com (+ Vida PR, 2026-06-01); alianza.com
 - Screened-out verticals: getjobber.com comparison; sangoma.com/products/scribe; zultys.com Release 19
+- Sizing/ownership (2026-07-29 update): leadiq.com/c/agencybloc; zoominfo.com/c/senior-market-sales-llc; alliant.com SMS-acquisition PR; pitchbook.com/profiles/company/65606-41 (Ritter); integrity.com/partner/ritter-insurance-marketing; pitchbook.com/profiles/company/56643-31 + leadiq.com/c/spring-venture-group (SVG headcount)
