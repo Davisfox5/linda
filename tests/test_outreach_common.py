@@ -342,26 +342,88 @@ def test_link_marker_renders_anchor_and_plain_text():
     t = _template(body="x")
     html = render_email_html("book a meeting with me [here](https://flexonline.net/book).", t)
     assert '<a href="https://flexonline.net/book" style="color:#2563eb;">here</a>' in html
+    # The plain part keeps the destination — "label: url", never stripped.
     assert strip_markers("book [here](https://flexonline.net/book).") == (
-        "book here (https://flexonline.net/book)."
+        "book here: https://flexonline.net/book."
+    )
+
+
+def test_link_marker_prepends_missing_scheme():
+    t = _template(body="x")
+    html = render_email_html("[Book a 15-minute demo](flexonline.net/book)", t)
+    assert (
+        '<a href="https://flexonline.net/book" style="color:#2563eb;">'
+        "Book a 15-minute demo</a>"
+    ) in html
+    # The plain part shows the URL exactly as typed — no prepending.
+    assert strip_markers("[Book a 15-minute demo](flexonline.net/book)") == (
+        "Book a 15-minute demo: flexonline.net/book"
     )
 
 
 def test_link_marker_http_only_and_no_injection():
-    # Non-http(s) schemes stay literal.
+    # Non-http(s) schemes fail the domain pattern and stay literal in
+    # BOTH parts — javascript: can never become an href.
     assert strip_markers("[x](javascript:alert(1))") == "[x](javascript:alert(1))"
     t = _template(body="x")
-    assert "<a" not in render_email_html("[x](javascript:alert(1))", t)
+    html = render_email_html("[x](javascript:alert(1))", t)
+    assert "<a" not in html and "javascript:alert(1)" in html
     # Link text is escaped before the anchor is built.
     html = render_email_html('[<img>](https://a.io/p)', t)
     assert "&lt;img&gt;" in html and "<img>" not in html
 
 
-def test_link_inside_bold_and_url_underscores_not_formatting():
+def test_link_label_may_carry_style_markers():
+    t = _template(body="x")
+    html = render_email_html("[**Book** a demo](flexonline.net/book)", t)
+    assert (
+        '<a href="https://flexonline.net/book" style="color:#2563eb;">'
+        "<b>Book</b> a demo</a>"
+    ) in html
+    assert strip_markers("[**Book** a demo](flexonline.net/book)") == (
+        "Book a demo: flexonline.net/book"
+    )
+
+
+def test_link_url_with_path_and_query():
+    t = _template(body="x")
+    html = render_email_html("[pricing](https://gym.example/p?a=1&b=2)", t)
+    assert '<a href="https://gym.example/p?a=1&amp;b=2"' in html
+    assert strip_markers("[pricing](https://gym.example/p?a=1&b=2)") == (
+        "pricing: https://gym.example/p?a=1&b=2"
+    )
+
+
+def test_two_adjacent_links():
+    t = _template(body="x")
+    html = render_email_html("[a](one.example/x)[b](two.example/y)", t)
+    assert '<a href="https://one.example/x" style="color:#2563eb;">a</a>' in html
+    assert '<a href="https://two.example/y" style="color:#2563eb;">b</a>' in html
+    assert strip_markers("[a](one.example/x) [b](two.example/y)") == (
+        "a: one.example/x b: two.example/y"
+    )
+
+
+def test_square_bracket_text_without_url_stays_literal():
+    t = _template(body="x")
+    body = "per the notes [see appendix] and [x](not a url) and [n](1.55)"
+    assert strip_markers(body) == body
+    html = render_email_html(body, t)
+    assert "<a" not in html
+    assert "[see appendix]" in html and "[x](not a url)" in html
+
+
+def test_link_inside_bold_and_url_marker_chars_not_formatting():
     t = _template(body="x")
     html = render_email_html("**see [docs](https://a.io/my_page_here) now**", t)
     assert "<b>" in html and '<a href="https://a.io/my_page_here"' in html
     assert "<u>" not in html
+    # Marker characters at a path segment's edges must not corrupt the
+    # href either — the style passes never see the URL.
+    html = render_email_html("[docs](https://a.io/_v2_/guide) and [x](a.io/*y*)", t)
+    assert '<a href="https://a.io/_v2_/guide"' in html
+    assert '<a href="https://a.io/*y*"' in html
+    assert "<u>" not in html and "<i>" not in html
 
 
 def test_footer_text_overrides_default_everywhere():

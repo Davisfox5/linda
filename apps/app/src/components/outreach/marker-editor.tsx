@@ -25,8 +25,8 @@ export function cssStackFor(fontFamily: string | null | undefined): string | und
 // ── marker <-> HTML serialization ───────────────────────────────────
 //
 // Mirrors backend/app/services/outreach/common.py's _BOLD_RE / _ITALIC_RE
-// / _UNDERLINE_RE exactly, so what the editor round-trips through
-// matches what the send-time renderer (render_email_html) parses.
+// / _UNDERLINE_RE / _LINK_RE exactly, so what the editor round-trips
+// through matches what the send-time renderer (render_email_html) parses.
 // Content must start and end on non-space so "2 * 3 * 4" and stray
 // underscores never read as formatting.
 
@@ -37,6 +37,12 @@ const TRIPLE_RE = /\*\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*\*/g;
 const BOLD_RE = /\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*/g;
 const ITALIC_RE = /(?<!\*)\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?!\*)/g;
 const UNDERLINE_RE = /(?<![\w_])_([^\s_](?:[^_\n]*?[^\s_])?)_(?![\w_])/g;
+
+// Inline links — [label](url), scheme optional, http(s)-shaped domains
+// only (mirrors _LINK_RE). Applied before the style passes so a label
+// may itself carry them.
+const LINK_RE =
+    /\[([^\]\n]+)\]\(((?:https?:\/\/)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:\/[^\s)]*)?)\)/gi;
 
 function escapeHtml(s: string): string {
     return s
@@ -50,11 +56,23 @@ function escapeHtml(s: string): string {
 /** Plain-text-with-markers -> HTML, for setting the editor's initial
  * innerHTML (only on mount / when `value` changes externally). */
 export function markersToHtml(text: string): string {
-    const escaped = escapeHtml(text || "");
-    let html = escaped.replace(TRIPLE_RE, "<b><i>$1</i></b>");
+    const escaped = escapeHtml(text || "").replace(/\u0000/g, "");
+    // Hrefs sit behind \u0000-framed placeholders while the style passes
+    // run, so a URL's underscores/asterisks can never read as formatting;
+    // the label stays inline — it MAY carry style markers. The href keeps
+    // the URL exactly as typed (no https:// prepending) so htmlToMarkers
+    // round-trips the user's text unchanged; scheme normalization happens
+    // in the send-time renderer only.
+    const hrefs: string[] = [];
+    let html = escaped.replace(LINK_RE, (_m, label: string, url: string) => {
+        hrefs.push(url);
+        return `<a href="\u0000${hrefs.length - 1}\u0000" style="color:#2563eb;">${label}</a>`;
+    });
+    html = html.replace(TRIPLE_RE, "<b><i>$1</i></b>");
     html = html.replace(BOLD_RE, "<b>$1</b>");
     html = html.replace(ITALIC_RE, "<i>$1</i>");
     html = html.replace(UNDERLINE_RE, "<u>$1</u>");
+    html = html.replace(/\u0000(\d+)\u0000/g, (_m, i) => hrefs[Number(i)] ?? "");
     return html.replace(/\n/g, "<br>");
 }
 
@@ -93,7 +111,8 @@ function isItalicStyle(style: CSSStyleDeclaration | undefined): boolean {
 /** Recursive, transparent-by-default walk: unknown elements just
  * recurse into their children. B/STRONG (or inline font-weight:bold),
  * I/EM (or font-style:italic), and U (or text-decoration:underline)
- * wrap their rendered text in the matching marker. BR -> newline. */
+ * wrap their rendered text in the matching marker; A serializes back to
+ * [label](href). BR -> newline. */
 function walkNode(node: Node): string {
     if (node.nodeType === Node.TEXT_NODE) {
         return (node.textContent || "").replace(/\u00A0/g, " ");
@@ -110,6 +129,12 @@ function walkNode(node: Node): string {
     const underline = tag === "U" || hasUnderline(el.style);
 
     let out = inner;
+    if (tag === "A") {
+        // getAttribute (not .href) keeps the URL verbatim; .href would
+        // resolve a scheme-less value against the app's own origin.
+        const href = el.getAttribute("href");
+        if (href && out) out = `[${out}](${href})`;
+    }
     if (underline) out = wrapMarker(out, "_");
     if (italic) out = wrapMarker(out, "*");
     if (bold) out = wrapMarker(out, "**");

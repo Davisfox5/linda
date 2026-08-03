@@ -74,6 +74,22 @@ def test_rewriter_swaps_href_keeps_display_text():
     assert "gym.example" not in html
 
 
+def test_rewriter_sees_normalized_scheme_for_bare_domains():
+    # A scheme-less marker is normalized to https:// BEFORE the rewriter
+    # runs, so the stored original_url (the redirect's 302 target) is
+    # always an absolute URL.
+    seen = []
+
+    def rewriter(url):
+        seen.append(url)
+        return None
+
+    render_email_html(
+        "[Book a demo](flexonline.net/book)", _template(), link_rewriter=rewriter
+    )
+    assert seen == ["https://flexonline.net/book"]
+
+
 def test_rewriter_none_result_keeps_original():
     html = render_email_html(
         "See [docs](https://gym.example/docs).",
@@ -115,7 +131,7 @@ def test_footer_and_mailto_never_rewritten():
 
 def test_plain_text_part_never_sees_the_rewrite():
     body = "See [docs](https://gym.example/docs)."
-    assert strip_markers(body) == "See docs (https://gym.example/docs)."
+    assert strip_markers(body) == "See docs: https://gym.example/docs."
 
 
 # ── Public /t/{token} endpoint ──────────────────────────────────────────

@@ -90,8 +90,9 @@ class OutreachTemplate(BaseModel):
     footer of every send.
 
     Body text supports lightweight formatting markers — ``**bold**``,
-    ``*italic*``, ``_underline_`` — rendered into the HTML part at send
-    time and stripped from the plain-text part.
+    ``*italic*``, ``_underline_``, ``[label](url)`` links — rendered into
+    the HTML part at send time. The plain-text part strips the style
+    markers; links become ``label: url`` so the destination survives.
     """
 
     subject: str = Field(..., min_length=1, max_length=400)
@@ -343,11 +344,12 @@ def compose_footer(template: OutreachTemplate) -> str:
 
 # ── Lightweight formatting → HTML ───────────────────────────────────────
 #
-# The body supports three inline markers: **bold**, *italic*, _underline_.
-# The HTML part renders them; the plain-text part strips them. Nothing
-# else in the body is treated as markup — everything is HTML-escaped
-# before the markers are applied, so config/LLM text can never inject
-# tags.
+# The body supports four inline markers: **bold**, *italic*, _underline_,
+# and [label](url) links. The HTML part renders them; the plain-text part
+# strips the style markers (links keep their destination — see
+# strip_markers). Nothing else in the body is treated as markup —
+# everything is HTML-escaped before the markers are applied, so
+# config/LLM text can never inject tags.
 
 # Content must start and end on non-space (so "2 * 3 * 4" and stray
 # underscores never read as formatting). Triple asterisks — what
@@ -358,17 +360,28 @@ _BOLD_RE = re.compile(r"\*\*([^\s*](?:[^\n]*?[^\s*])?)\*\*")
 _ITALIC_RE = re.compile(r"(?<!\*)\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?!\*)")
 _UNDERLINE_RE = re.compile(r"(?<![\w_])_([^\s_](?:[^_\n]*?[^\s_])?)_(?![\w_])")
 
-# Inline links — ``[text](https://url)``. The HTML part renders an anchor;
-# the plain-text part shows "text (url)" so the destination stays visible
-# in text-only clients. http(s) only — anything else stays literal text.
-# Applied BEFORE the style markers so a URL's underscores/asterisks can
-# never read as formatting.
-_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^\s()<>]+)\)")
+# Inline links — ``[label](url)``, scheme optional. The HTML part renders
+# an anchor, prepending ``https://`` when the scheme is missing; the
+# plain-text part shows "label: url" so the destination stays visible in
+# text-only clients. Only http(s) can ever render as a link — any other
+# scheme (javascript:, mailto:, data:, …) fails the domain pattern and
+# stays literal text. Applied AFTER HTML-escaping and BEFORE the style
+# markers, so a label may itself carry those markers and can never
+# inject markup.
+_LINK_RE = re.compile(
+    r"\[([^\]\n]+)\]\(((?:https?://)?[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:/[^\s)]*)?)\)",
+    re.IGNORECASE,
+)
+_HTTP_SCHEME_RE = re.compile(r"https?://", re.IGNORECASE)
 
 
 def strip_markers(text: str) -> str:
-    """Formatting markers removed — the plain-text alternative body."""
-    out = _LINK_RE.sub(r"\1 (\2)", text or "")
+    """Formatting markers removed — the plain-text alternative body.
+
+    Links are the exception: they render as ``label: url`` rather than
+    being stripped, so text-only readers still get the destination
+    (exactly as typed — no scheme prepending here)."""
+    out = _LINK_RE.sub(r"\1: \2", text or "")
     out = _TRIPLE_RE.sub(r"\1", out)
     out = _BOLD_RE.sub(r"\1", out)
     out = _ITALIC_RE.sub(r"\1", out)
@@ -379,10 +392,17 @@ def _markers_to_html(
     escaped: str,
     link_rewriter: Optional[Callable[[str], Optional[str]]] = None,
 ) -> str:
-    # `escaped` is already HTML-escaped, so the captured URL/text can't
+    # `escaped` is already HTML-escaped, so the captured URL/label can't
     # break out of the href attribute or inject markup ('"' is &quot; here).
+    # Hrefs sit behind \x00-framed placeholders while the style passes
+    # run, so a URL's underscores/asterisks can never read as formatting;
+    # the label stays inline — it MAY carry style markers.
+    hrefs: List[str] = []
+
     def _link(m: "re.Match") -> str:
-        text, href = m.group(1), m.group(2)
+        label, href = m.group(1), m.group(2)
+        if not _HTTP_SCHEME_RE.match(href):
+            href = "https://" + href
         if link_rewriter is not None:
             # The capture is escaped text; the rewriter works on (and
             # stores) the real destination, so unescape before handing
@@ -390,13 +410,19 @@ def _markers_to_html(
             replacement = link_rewriter(html_mod.unescape(href))
             if replacement:
                 href = html_mod.escape(replacement)
-        return f'<a href="{href}" style="color:#2563eb;">{text}</a>'
+        hrefs.append(href)
+        return '<a href="\x00{0}\x00" style="color:#2563eb;">{1}</a>'.format(
+            len(hrefs) - 1, label
+        )
 
-    out = _LINK_RE.sub(_link, escaped)
+    out = _LINK_RE.sub(_link, escaped.replace("\x00", ""))
     out = _TRIPLE_RE.sub(r"<b><i>\1</i></b>", out)
     out = _BOLD_RE.sub(r"<b>\1</b>", out)
     out = _ITALIC_RE.sub(r"<i>\1</i>", out)
-    return _UNDERLINE_RE.sub(r"<u>\1</u>", out)
+    out = _UNDERLINE_RE.sub(r"<u>\1</u>", out)
+    for i, href in enumerate(hrefs):
+        out = out.replace("\x00{0}\x00".format(i), href, 1)
+    return out
 
 
 def _paragraphs_html(
