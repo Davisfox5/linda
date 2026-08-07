@@ -11,3 +11,4 @@ __pycache__/
 !.claude/agents/
 fail_logs.txt
 test_output.log
+wav2vec2_checkpoints/

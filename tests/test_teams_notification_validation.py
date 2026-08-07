@@ -22,6 +22,12 @@ from backend.app.services.teams_recording.bot_interface import (
     reset_for_tests,
     set_media_bot_factory,
 )
+from tests.test_teams_common import (  # noqa: F401 — fixture re-export
+    AAD_TENANT_ID,
+    seeded_teams_integration,
+    teams_test_app,
+    teams_test_client,
+)
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "teams"
@@ -85,22 +91,43 @@ def test_validation_handshake_takes_precedence_over_body(client: TestClient):
 
 
 # ── Notification batch parsing ──────────────────────────────────────
+#
+# These two now exercise the real (SQLite-backed) persistence path via
+# ``teams_test_client`` — the plain synchronous ``client`` fixture above
+# has no DB wired up, and the notification handler now genuinely reads/
+# writes the DB (see ``services/teams_recording/ingest.py``). Full
+# happy-path persistence assertions (seeded Integration → TeamsCallRecord
+# / UcRecordingJob rows) live in ``tests/test_teams_ingest.py``; these
+# two stay focused on "the batch parses and 202s" plus the unknown-
+# tenant skip path, since no Integration is seeded here.
 
 
-def test_notification_batch_call_record_returns_202(client: TestClient):
+@pytest.mark.asyncio
+async def test_notification_batch_call_record_returns_202(teams_test_client):
     payload = json.loads((FIXTURES / "notification_call_record.json").read_text())
-    response = client.post("/teams/notification", json=payload)
+    response = await teams_test_client.post("/api/v1/teams/notification", json=payload)
     assert response.status_code == 202
-    assert response.json() == {"accepted": 1}
+    body = response.json()
+    assert body["accepted"] == 1
+    # No teams_compliance Integration is seeded for AAD_TENANT_ID in this
+    # test, so the entry resolves to the graceful skip path rather than
+    # persisting anything.
+    assert body["results"] == [{"action": "skipped_unknown_tenant"}]
 
 
-def test_notification_batch_recording_returns_202(client: TestClient):
+@pytest.mark.asyncio
+async def test_notification_batch_recording_returns_202(teams_test_client):
     payload = json.loads(
         (FIXTURES / "notification_recording_created.json").read_text()
     )
-    response = client.post("/teams/notification", json=payload)
+    response = await teams_test_client.post("/api/v1/teams/notification", json=payload)
     assert response.status_code == 202
-    assert response.json() == {"accepted": 2}
+    body = response.json()
+    assert body["accepted"] == 2
+    assert body["results"] == [
+        {"action": "skipped_unknown_tenant"},
+        {"action": "skipped_unknown_tenant"},
+    ]
 
 
 def test_notification_with_invalid_json_returns_400(client: TestClient):
