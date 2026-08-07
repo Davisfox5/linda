@@ -26,6 +26,20 @@ const nextConfig = {
                     },
                 ],
             },
+            {
+                // The embeddable live-call widget is meant to be
+                // framed by customer origins (dialers/CRMs embedding
+                // /embed/live/[sessionId] in an iframe). Every other
+                // route keeps the platform default (no explicit
+                // frame-ancestors / X-Frame-Options set here).
+                source: "/embed/:path*",
+                headers: [
+                    {
+                        key: "Content-Security-Policy",
+                        value: "frame-ancestors *",
+                    },
+                ],
+            },
         ];
     },
     async rewrites() {

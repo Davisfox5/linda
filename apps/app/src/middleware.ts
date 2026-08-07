@@ -3,13 +3,17 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 // Routes anonymous visitors can reach. API routes are always passed
 // through so the FastAPI backend (which has its own Clerk + API-key
 // auth) can return proper JSON 401/402 responses instead of Clerk's
-// redirect-to-sign-in behaviour.
+// redirect-to-sign-in behaviour. /embed is the iframe-embeddable live
+// widget — it authenticates via a single-use WS ticket in the query
+// string, not a Clerk session (see next.config.mjs for the matching
+// frame-ancestors header).
 const isPublic = createRouteMatcher([
     "/",
     "/sign-in(.*)",
     "/sign-up(.*)",
     "/signup",
     "/api/(.*)",
+    "/embed(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, req) => {

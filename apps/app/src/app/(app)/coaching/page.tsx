@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
     useEffect,
     useMemo,
@@ -10,8 +11,9 @@ import {
 } from "react";
 
 import {
+    categoryIcon,
     formatElapsed,
-    speakerLabel,
+    severityClass,
     useCoachingSessions,
     useLiveSession,
     useMintTicket,
@@ -22,6 +24,7 @@ import {
     type TicketResponse,
     type TranscriptLine,
 } from "@/lib/live-coaching";
+import { TranscriptView } from "@/components/transcript/transcript-view";
 import { useInteractions } from "@/lib/interactions";
 import { useApi } from "@/lib/api";
 import { useMe } from "@/lib/me";
@@ -61,6 +64,38 @@ export default function CoachingPage() {
     const ticketMutation = useMintTicket();
     const [issued, setIssued] = useState<TicketResponse | null>(null);
     const [agentName, setAgentName] = useState<string | null>(null);
+
+    // Screen-pop deep link: /live/<sessionId> bounces here with
+    // ?sessionId=<id> so dialers/CRMs can pop straight into the
+    // monitor view for a specific call without walking the picker
+    // form below. We mint the monitor ticket ourselves once /me has
+    // resolved (monitor tickets require a manager/admin user_id) and
+    // only attempt it once per sessionId.
+    const searchParams = useSearchParams();
+    const deepLinkSessionId = searchParams.get("sessionId");
+    const autoJoinedRef = useRef<string | null>(null);
+    const meUserId = me.data?.user?.id;
+
+    useEffect(() => {
+        if (!deepLinkSessionId || issued) return;
+        if (me.isLoading || !meUserId) return;
+        if (autoJoinedRef.current === deepLinkSessionId) return;
+        autoJoinedRef.current = deepLinkSessionId;
+        ticketMutation
+            .mutateAsync({
+                role: "monitor",
+                session_id: deepLinkSessionId,
+                user_id: meUserId,
+            })
+            .then((out) => {
+                setIssued(out);
+                setAgentName(null);
+            })
+            .catch(() => {
+                // Surfaced to the user via ticketMutation.error in
+                // IdleLayout, same as the manual "Start" flow.
+            });
+    }, [deepLinkSessionId, issued, me.isLoading, meUserId, ticketMutation]);
 
     const session = useLiveSession({
         ticket: issued?.ticket ?? null,
@@ -551,68 +586,16 @@ function ActiveLayout(props: ActiveProps) {
 }
 
 function TranscriptPanel({ transcript }: { transcript: TranscriptLine[] }) {
-    const scrollRef = useRef<HTMLDivElement | null>(null);
-    const [autoscroll, setAutoscroll] = useState(true);
-    const [jumped, setJumped] = useState(false);
-
-    useEffect(() => {
-        const el = scrollRef.current;
-        if (!el) return;
-        if (!autoscroll) return;
-        // Stick to the bottom on every new line. The "jumped" pill is
-        // surfaced only when the user manually scrolls up — that flips
-        // ``autoscroll`` to false in the scroll handler below.
-        el.scrollTop = el.scrollHeight;
-    }, [transcript.length, autoscroll]);
-
     return (
         <section className="md:col-span-3 rounded-lg border border-border bg-bg-card overflow-hidden">
             <div className="px-4 py-2 border-b border-border flex items-center justify-between">
                 <h3 className="text-sm font-semibold">Transcript</h3>
-                {jumped && !autoscroll ? (
-                    <button
-                        type="button"
-                        onClick={() => {
-                            setAutoscroll(true);
-                            setJumped(false);
-                        }}
-                        className="rounded-full bg-primary/10 text-primary px-3 py-0.5 text-xs hover:bg-primary/20"
-                    >
-                        Jump to live
-                    </button>
-                ) : null}
             </div>
-            <div
-                ref={scrollRef}
-                onScroll={(e) => {
-                    const el = e.currentTarget;
-                    const atBottom =
-                        el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-                    setAutoscroll(atBottom);
-                    setJumped(!atBottom);
-                }}
-                className="h-[60vh] overflow-y-auto px-4 py-3 space-y-2 text-sm"
-            >
-                {transcript.length === 0 ? (
-                    <div className="text-text-muted">
-                        Waiting for the first turn…
-                    </div>
-                ) : (
-                    transcript.map((line) => (
-                        <div
-                            key={line.id}
-                            className={`leading-relaxed ${
-                                line.isFinal ? "text-text" : "text-text-muted italic"
-                            }`}
-                        >
-                            <span className="text-xs font-semibold uppercase tracking-wide text-text-subtle mr-2">
-                                {speakerLabel(line.speaker)}
-                            </span>
-                            {line.text}
-                        </div>
-                    ))
-                )}
-            </div>
+            {/* Scroll/autoscroll/jump-to-live + speaker-labeled line
+                rendering live in the shared component so the embed
+                widget (/embed/live/[sessionId]) doesn't reimplement
+                it. */}
+            <TranscriptView transcript={transcript} />
         </section>
     );
 }
@@ -640,44 +623,6 @@ function SuggestionsPanel({ suggestions }: { suggestions: SuggestionCard[] }) {
             </div>
         </section>
     );
-}
-
-function severityClass(severity: SuggestionCard["severity"]): string {
-    if (severity === "critical")
-        return "border-accent-rose/40 bg-accent-rose/5";
-    if (severity === "warn")
-        return "border-accent-amber/40 bg-accent-amber/5";
-    return "border-border bg-bg-elevated";
-}
-
-function categoryIcon(category: string): string {
-    switch (category) {
-        case "objection":
-            return "!";
-        case "competitor":
-            return "C";
-        case "next_step":
-        case "next-step":
-        case "next-step-required":
-            return "→";
-        case "compliance":
-            return "✓";
-        case "sentiment":
-        case "sentiment_drop":
-            return "♥";
-        case "kb":
-            return "?";
-        case "churn":
-            return "⚠";
-        case "upsell":
-            return "$";
-        case "escalation":
-            return "↑";
-        case "advocate":
-            return "★";
-        default:
-            return "•";
-    }
 }
 
 function SuggestionCardView({ card }: { card: SuggestionCard }) {

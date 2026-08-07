@@ -673,3 +673,47 @@ export function speakerLabel(speaker: number | string | null): string {
     if (speaker == null) return "Speaker";
     return `Caller${typeof speaker === "number" ? ` ${speaker}` : ""}`;
 }
+
+/** Tailwind border/bg pairing for a suggestion card's severity. Shared
+ *  by the /coaching suggestions panel and the embed widget's alert
+ *  strip (``/embed/live/[sessionId]``) so the two never drift. */
+export function severityClass(severity: SuggestionCard["severity"]): string {
+    if (severity === "critical")
+        return "border-accent-rose/40 bg-accent-rose/5";
+    if (severity === "warn")
+        return "border-accent-amber/40 bg-accent-amber/5";
+    return "border-border bg-bg-elevated";
+}
+
+/** Single-glyph icon for a suggestion card's category. See
+ *  ``severityClass`` above for why this lives here instead of the
+ *  page component. */
+export function categoryIcon(category: string): string {
+    switch (category) {
+        case "objection":
+            return "!";
+        case "competitor":
+            return "C";
+        case "next_step":
+        case "next-step":
+        case "next-step-required":
+            return "→";
+        case "compliance":
+            return "✓";
+        case "sentiment":
+        case "sentiment_drop":
+            return "♥";
+        case "kb":
+            return "?";
+        case "churn":
+            return "⚠";
+        case "upsell":
+            return "$";
+        case "escalation":
+            return "↑";
+        case "advocate":
+            return "★";
+        default:
+            return "•";
+    }
+}
