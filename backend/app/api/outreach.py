@@ -19,11 +19,12 @@ Campaigns
 - POST  /outreach/campaigns                — create (status=draft) + enroll prospects
 - GET   /outreach/campaigns                — list with member-state rollups
 - GET   /outreach/campaigns/{id}           — detail + quota state
+- PATCH /outreach/campaigns/{id}           — partial update (guidance/template/window/limit/mode)
 - POST  /outreach/campaigns/{id}/members   — enroll more prospects
 - GET   /outreach/campaigns/{id}/members   — members incl. drafts
 - POST  /outreach/campaigns/{id}/generate-drafts — 202, Celery fan-out
 - POST  /outreach/campaigns/{id}/approve-drafts  — bulk approve
-- PATCH /outreach/members/{member_id}      — edit / approve / reject one draft
+- PATCH /outreach/members/{member_id}      — edit / approve / reject / halt one member
 - POST  /outreach/campaigns/{id}/activate  — validate + go live
 - POST  /outreach/campaigns/{id}/pause     — stop sending (resume via activate)
 
@@ -42,7 +43,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, EmailStr, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -265,7 +266,51 @@ class ApproveDraftsIn(BaseModel):
 class MemberPatchIn(BaseModel):
     draft_subject: Optional[str] = Field(None, max_length=400)
     draft_body: Optional[str] = None
-    action: Optional[Literal["approve", "reject"]] = None
+    action: Optional[Literal["approve", "reject", "halt"]] = None
+
+
+# Partial-update shapes for PATCH /outreach/campaigns/{id}. Deliberately
+# narrower than OutreachConfig — only the fields safe to change on a live
+# campaign are accepted (extra="forbid" rejects the rest, so e.g.
+# attachments or track_clicks can't slip through a merge unvalidated).
+
+
+class CampaignStepPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    offset_days: Optional[int] = Field(None, ge=0, le=90)
+    guidance: Optional[str] = None
+
+
+class CampaignTemplatePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: Optional[str] = Field(None, min_length=1, max_length=400)
+    body: Optional[str] = Field(None, min_length=1)
+
+
+class CampaignSendWindowPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    start_hour: Optional[int] = Field(None, ge=0, le=23)
+    end_hour: Optional[int] = Field(None, ge=1, le=24)
+    timezone: Optional[str] = None
+    days: Optional[List[int]] = None
+
+
+class CampaignConfigPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    steps: Optional[List[CampaignStepPatch]] = None
+    template: Optional[CampaignTemplatePatch] = None
+    send_window: Optional[CampaignSendWindowPatch] = None
+    daily_limit: Optional[int] = Field(None, ge=1, le=200)
+    mode: Optional[str] = None
+
+
+class OutreachCampaignPatch(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=300)
+    config: Optional[CampaignConfigPatch] = None
 
 
 # ── Helpers ────────────────────────────────────────────────────────────
@@ -367,7 +412,11 @@ def _validated_config(raw: Dict[str, Any]) -> dict:
     try:
         return parse_config(raw).model_dump(mode="json")
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors())
+        # ctx can carry the raw ValueError a custom validator raised
+        # (e.g. the mode/provider checks) — not JSON serializable.
+        raise HTTPException(
+            status_code=422, detail=exc.errors(include_url=False, include_context=False)
+        )
 
 
 def _check_upload_keys(config: dict, tenant_id: uuid.UUID) -> None:
@@ -1078,6 +1127,77 @@ async def get_outreach_campaign(
     return await _campaign_out(db, tenant, campaign)
 
 
+@router.patch("/outreach/campaigns/{campaign_id}", response_model=OutreachCampaignOut)
+async def patch_outreach_campaign(
+    campaign_id: uuid.UUID,
+    body: OutreachCampaignPatch,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+    _scope: None = Depends(require_scope("campaigns:write")),
+):
+    """Partial campaign update: name, per-step guidance, template
+    subject/body, send window, daily limit, mode.
+
+    Sequence *timing* is locked once any member has moved beyond
+    draft_pending — from there next_send_at values already derive from
+    the current offsets, so a step-count or offset_days change would
+    silently reshuffle in-flight schedules. Everything else stays
+    editable on an active campaign.
+    """
+    campaign = await _get_outreach_campaign_or_404(db, tenant, campaign_id)
+    if body.config is not None:
+        patch = body.config.model_dump(exclude_unset=True)
+        merged = dict(campaign.config or {})
+        if "steps" in patch:
+            old_steps = list(merged.get("steps") or [])
+            merged["steps"] = [
+                {**(old_steps[i] if i < len(old_steps) else {}), **step_patch}
+                for i, step_patch in enumerate(patch["steps"])
+            ]
+        if "template" in patch:
+            merged["template"] = {**(merged.get("template") or {}), **patch["template"]}
+        if "send_window" in patch:
+            merged["send_window"] = {
+                **(merged.get("send_window") or {}),
+                **patch["send_window"],
+            }
+        for key in ("daily_limit", "mode"):
+            if key in patch:
+                merged[key] = patch[key]
+
+        # Validating the OLD config too keeps the timing comparison on
+        # like-for-like shapes (defaults filled in) — and fails fast on a
+        # stale/broken stored config, same as generate-drafts.
+        old_config = _validated_config(dict(campaign.config or {}))
+        new_config = _validated_config(merged)
+        old_timing = [s["offset_days"] for s in old_config["steps"]]
+        new_timing = [s["offset_days"] for s in new_config["steps"]]
+        if old_timing != new_timing:
+            in_flight = (
+                await db.execute(
+                    select(func.count(OutreachMember.id)).where(
+                        OutreachMember.campaign_id == campaign.id,
+                        OutreachMember.state != "draft_pending",
+                    )
+                )
+            ).scalar_one()
+            if int(in_flight):
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "Cannot change the step count or offset_days while "
+                        f"{int(in_flight)} member(s) are beyond draft_pending — "
+                        "sequence timing is already in flight"
+                    ),
+                )
+        campaign.config = new_config
+        campaign.subject = new_config["template"]["subject"]
+    if body.name is not None:
+        campaign.name = body.name
+    await db.flush()
+    return await _campaign_out(db, tenant, campaign)
+
+
 @router.post("/outreach/campaigns/{campaign_id}/members", response_model=OutreachCampaignOut)
 async def add_campaign_members(
     campaign_id: uuid.UUID,
@@ -1225,16 +1345,28 @@ async def patch_member(
     tenant: Tenant = Depends(get_current_tenant),
     _scope: None = Depends(require_scope("campaigns:write")),
 ):
-    """Edit a member's current draft, and/or approve / reject it.
+    """Edit a member's current draft, and/or approve / reject / halt it.
 
     An edit on a ready draft keeps it awaiting approval; edit + action
     'approve' in one call is the common review-UI path. 'reject' sends
-    the member back to draft_pending for regeneration.
+    the member back to draft_pending for regeneration. 'halt' removes
+    the member from the campaign — it never sends and drops out of the
+    review inbox and bulk approve — without touching the prospect's
+    contactability elsewhere (prospect-level opt-out halts *every*
+    campaign, which is too blunt for "just not this sequence").
     """
     member = await db.get(OutreachMember, member_id)
     if member is None or member.tenant_id != tenant.id:
         raise HTTPException(status_code=404, detail="Member not found")
-    if member.state not in ("draft_pending", "needs_approval", "queued"):
+    if body.action == "halt":
+        # Halting is legal from any state that could still send (or
+        # re-enter the send path); replied/completed are already done.
+        if member.state in ("replied", "completed"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Member in state {member.state!r} cannot be halted",
+            )
+    elif member.state not in ("draft_pending", "needs_approval", "queued"):
         raise HTTPException(
             status_code=409,
             detail=f"Member in state {member.state!r} has no editable draft",
@@ -1256,6 +1388,15 @@ async def patch_member(
         member.draft_subject = None
         member.draft_body = None
         member.state = "draft_pending"
+    elif body.action == "halt":
+        member.state = "halted"
+        member.halt_reason = "removed_manually"
+        member.next_send_at = None
+        # Whatever draft exists is by definition unsent — drop it so the
+        # member can't resurface anywhere drafts are listed or approved.
+        member.draft_status = None
+        member.draft_subject = None
+        member.draft_body = None
     elif body.draft_subject is not None or body.draft_body is not None:
         if member.draft_status == "approved":
             # An edit after approval needs re-approval unless approved here.
@@ -1308,7 +1449,9 @@ async def activate_campaign(
     try:
         config = parse_config(campaign.config)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors())
+        raise HTTPException(
+            status_code=422, detail=exc.errors(include_url=False, include_context=False)
+        )
 
     integ = await resolve_email_integration(db, tenant.id, config.provider)
     if integ is None:

@@ -51,6 +51,7 @@ from backend.app.services.email.outbound import (
     close_sender,
     resolve_email_integration_sync,
 )
+from backend.app.services.outreach import copy_gate
 from backend.app.services.outreach import drafts as drafts_mod
 from backend.app.services.outreach.links import build_link_rewriter, persist_links
 from backend.app.services.outreach.common import (
@@ -280,12 +281,25 @@ def generate_drafts_for_campaign(
         member.draft_subject = draft["subject"]
         member.draft_body = draft["body"]
         member.personalization = {k: v for k, v in draft["facts"].items() if v}
-        if config.mode == "auto":
+        # Auto mode may only self-approve drafts that clear the house
+        # copy gate — a failing draft parks for human review instead,
+        # with the failure list surfaced on the member.
+        gate_failures: List[str] = []
+        if config.mode == "auto" and get_settings().OUTREACH_COPY_GATE_ENABLED:
+            gate_failures = copy_gate.evaluate_draft(
+                draft["body"], customer.name
+            )["failures"]
+        if config.mode == "auto" and not gate_failures:
             member.draft_status = "approved"
             member.state = "queued"
             if member.next_send_at is None:
                 member.next_send_at = datetime.now(timezone.utc)
         else:
+            if gate_failures:
+                member.personalization = {
+                    **member.personalization,
+                    "copy_gate_failures": gate_failures,
+                }
             member.draft_status = "ready"
             member.state = "needs_approval"
         generated += 1
@@ -484,6 +498,33 @@ def _send_member_touch(
         member.next_send_at = None
         session.commit()
         return False
+
+    # Final backstop: every outgoing campaign email must clear the house
+    # copy gate, even a human-approved (or human-edited) draft. A failing
+    # draft is parked back in the review inbox — draft kept — instead of
+    # going out.
+    if get_settings().OUTREACH_COPY_GATE_ENABLED:
+        gate = copy_gate.evaluate_draft(member.draft_body or "", customer.name)
+        if not gate["pass"]:
+            member.state = "needs_approval"
+            member.draft_status = "ready"
+            member.next_send_at = None
+            member.personalization = {
+                **(member.personalization or {}),
+                "copy_gate_failures": gate["failures"],
+            }
+            session.commit()
+            logger.warning(
+                "outreach copy gate blocked send member=%s campaign=%s: %s",
+                member.id, campaign.id, "; ".join(gate["failures"]),
+            )
+            return False
+        if "copy_gate_failures" in (member.personalization or {}):
+            member.personalization = {
+                k: v
+                for k, v in member.personalization.items()
+                if k != "copy_gate_failures"
+            }
 
     # Campaign file attachments must resolve before anything sends — a
     # promised attachment silently missing from a live email is worse

@@ -108,6 +108,18 @@ def fake_sender(monkeypatch):
     return FakeSender
 
 
+@pytest.fixture(autouse=True)
+def copy_gate_off(monkeypatch):
+    """The stub drafts these tests seed ("Body 0") would never clear the
+    house copy gate — keep it off for the send-machinery tests. The
+    gate's own tests (bottom of this file) flip it back on."""
+    from backend.app.config import get_settings
+
+    # get_settings() is cached; flip the flag on the live instance (same
+    # pattern as test_action_plan_executor).
+    monkeypatch.setattr(get_settings(), "OUTREACH_COPY_GATE_ENABLED", False)
+
+
 def _seed(db: Session, n_members: int = 1, config: Optional[dict] = None):
     tenant = Tenant(name="T", slug=f"t-{uuid.uuid4().hex[:8]}")
     db.add(tenant)
@@ -633,3 +645,129 @@ def test_track_clicks_without_base_url_declines_rewrite(db, fake_sender):
     kw = fake_sender.calls[0]
     assert 'href="https://gym.example/p"' in kw["body_html"]
     assert db.execute(select(OutreachLink)).scalars().all() == []
+
+
+# ── Copy gate (send-time backstop + auto-mode approval) ────────────────
+
+
+@pytest.fixture
+def copy_gate_on(monkeypatch):
+    from backend.app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "OUTREACH_COPY_GATE_ENABLED", True)
+
+
+def test_send_time_gate_parks_failing_approved_draft(db, fake_sender, copy_gate_on):
+    """Even a human-approved draft that fails the gate must not send —
+    it flips back to needs_approval with the draft kept, so it surfaces
+    in the review inbox instead of going out."""
+    tenant, campaign, (member,) = _seed(db)
+    failing = "Quick note — worth a look?"  # em dash, way under 50 words
+    member.draft_body = failing
+    db.commit()
+
+    result = scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    assert result["sent"] == 0
+    assert fake_sender.calls == []
+    db.refresh(member)
+    assert member.state == "needs_approval"
+    assert member.draft_status == "ready"
+    assert member.draft_body == failing  # draft kept for the reviewer
+    assert member.next_send_at is None
+    failures = member.personalization["copy_gate_failures"]
+    assert any("em/en dashes" in f for f in failures)
+    assert any("word count" in f for f in failures)
+    assert db.execute(select(EmailSend)).scalars().all() == []
+
+
+def test_send_time_gate_passes_clean_draft_and_clears_stale_failures(
+    db, fake_sender, copy_gate_on
+):
+    from tests.test_outreach_copy_gate import send_ready_draft
+
+    tenant, campaign, (member,) = _seed(db)
+    member.draft_body = send_ready_draft("Gym 0")  # normalized to "Acme"
+    member.personalization = {"copy_gate_failures": ["stale from a prior draft"]}
+    db.commit()
+
+    result = scheduler.run_campaign_tick(db, tenant, campaign, now_utc=IN_WINDOW)
+    assert result["sent"] == 1
+    db.refresh(member)
+    assert member.state == "in_sequence"
+    assert "copy_gate_failures" not in (member.personalization or {})
+
+
+def _reset_for_generation(db, member):
+    member.state = "draft_pending"
+    member.draft_status = None
+    member.draft_subject = None
+    member.draft_body = None
+    member.next_send_at = None
+    db.commit()
+
+
+def test_auto_mode_gate_parks_failing_draft_as_needs_approval(
+    db, fake_sender, copy_gate_on, monkeypatch
+):
+    tenant, campaign, (member,) = _seed(db, config={**CONFIG, "mode": "auto"})
+    _reset_for_generation(db, member)
+    monkeypatch.setattr(
+        scheduler.drafts_mod,
+        "generate_member_draft",
+        lambda campaign, config, member, customer, step_index=None: {
+            "subject": "Hello",
+            "body": "Saw your gym — impressive!",  # dropped subject + em dash
+            "facts": {"hook": "Hook 0"},
+        },
+    )
+    out = scheduler.generate_drafts_for_campaign(db, tenant, campaign)
+    assert out["generated"] == 1
+    db.refresh(member)
+    # Parked for review, NOT self-approved.
+    assert member.state == "needs_approval"
+    assert member.draft_status == "ready"
+    assert member.next_send_at is None
+    failures = member.personalization["copy_gate_failures"]
+    assert any("dropped-subject" in f for f in failures)
+    assert member.personalization["hook"] == "Hook 0"  # facts kept alongside
+
+
+def test_auto_mode_gate_passing_draft_still_self_approves(
+    db, fake_sender, copy_gate_on, monkeypatch
+):
+    from tests.test_outreach_copy_gate import send_ready_draft
+
+    tenant, campaign, (member,) = _seed(db, config={**CONFIG, "mode": "auto"})
+    _reset_for_generation(db, member)
+    monkeypatch.setattr(
+        scheduler.drafts_mod,
+        "generate_member_draft",
+        lambda campaign, config, member, customer, step_index=None: {
+            "subject": "Hello",
+            "body": send_ready_draft("Gym 0"),
+            "facts": {},
+        },
+    )
+    scheduler.generate_drafts_for_campaign(db, tenant, campaign)
+    db.refresh(member)
+    assert member.state == "queued"
+    assert member.draft_status == "approved"
+    assert "copy_gate_failures" not in (member.personalization or {})
+
+
+def test_gate_disabled_keeps_old_auto_approve_behavior(db, fake_sender, monkeypatch):
+    # copy_gate_off (autouse) is in effect — the emergency switch restores
+    # the pre-gate behavior end to end.
+    tenant, campaign, (member,) = _seed(db, config={**CONFIG, "mode": "auto"})
+    _reset_for_generation(db, member)
+    monkeypatch.setattr(
+        scheduler.drafts_mod,
+        "generate_member_draft",
+        lambda campaign, config, member, customer, step_index=None: {
+            "subject": "Hello", "body": "Too short — fails the gate.", "facts": {}
+        },
+    )
+    scheduler.generate_drafts_for_campaign(db, tenant, campaign)
+    db.refresh(member)
+    assert member.state == "queued"
+    assert member.draft_status == "approved"

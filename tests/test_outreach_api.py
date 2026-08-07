@@ -431,6 +431,232 @@ async def test_draft_review_approve_flow(client, test_session_factory, test_tena
     assert rej.json()["draft_subject"] is None
 
 
+async def test_patch_campaign_updates_fields_on_live_campaign(client):
+    await client.post("/api/v1/prospects/import", json={"prospects": _rows(1)})
+    pid = (await client.get("/api/v1/prospects")).json()["items"][0]["prospect_id"]
+    created = (
+        await client.post(
+            "/api/v1/outreach/campaigns",
+            json={"name": "Sweep", "config": VALID_CONFIG, "prospect_ids": [pid]},
+        )
+    ).json()
+    campaign_id = created["id"]
+    # VALID_CONFIG carries no steps → the two defaults (offsets 0 and 4).
+    assert [s["offset_days"] for s in created["config"]["steps"]] == [0, 4]
+
+    resp = await client.patch(
+        f"/api/v1/outreach/campaigns/{campaign_id}",
+        json={
+            "name": "Sweep v2",
+            "config": {
+                "steps": [{}, {"guidance": "Bump with the new hook."}],
+                "template": {"subject": "New subject for {business_name}"},
+                "send_window": {"start_hour": 8, "end_hour": 12},
+                "daily_limit": 5,
+                "mode": "auto",
+            },
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["name"] == "Sweep v2"
+    config = body["config"]
+    # Same step count/offsets; only guidance changed.
+    assert [s["offset_days"] for s in config["steps"]] == [0, 4]
+    assert config["steps"][1]["guidance"] == "Bump with the new hook."
+    assert config["template"]["subject"] == "New subject for {business_name}"
+    # Untouched template fields survive the merge.
+    assert config["template"]["body"] == VALID_CONFIG["template"]["body"]
+    assert config["template"]["sender_name"] == "Davis Fox"
+    assert config["send_window"]["start_hour"] == 8
+    assert config["send_window"]["timezone"] == "America/New_York"
+    assert config["daily_limit"] == 5
+    assert config["mode"] == "auto"
+
+    # GET reflects the same merged config.
+    fetched = (await client.get(f"/api/v1/outreach/campaigns/{campaign_id}")).json()
+    assert fetched["config"] == config
+    assert fetched["name"] == "Sweep v2"
+
+
+async def test_patch_campaign_locks_timing_once_members_in_flight(
+    client, test_session_factory, test_tenant
+):
+    await client.post("/api/v1/prospects/import", json={"prospects": _rows(1)})
+    pid = (await client.get("/api/v1/prospects")).json()["items"][0]["prospect_id"]
+    campaign_id = (
+        await client.post(
+            "/api/v1/outreach/campaigns",
+            json={"name": "Sweep", "config": VALID_CONFIG, "prospect_ids": [pid]},
+        )
+    ).json()["id"]
+
+    # All members still draft_pending → timing is free to change.
+    grow = await client.patch(
+        f"/api/v1/outreach/campaigns/{campaign_id}",
+        json={"config": {"steps": [{}, {"offset_days": 7}, {"offset_days": 14}]}},
+    )
+    assert grow.status_code == 200, grow.text
+    assert [s["offset_days"] for s in grow.json()["config"]["steps"]] == [0, 7, 14]
+
+    # A member advances (draft generated) → timing locks.
+    from backend.app.models import OutreachMember
+    from sqlalchemy import select
+
+    async with test_session_factory() as s:
+        member = (
+            (await s.execute(
+                select(OutreachMember).where(OutreachMember.tenant_id == test_tenant.id)
+            )).scalars().one()
+        )
+        member.draft_subject = "Hello"
+        member.draft_body = "Body"
+        member.draft_status = "ready"
+        member.state = "needs_approval"
+        await s.commit()
+
+    offset_change = await client.patch(
+        f"/api/v1/outreach/campaigns/{campaign_id}",
+        json={"config": {"steps": [{}, {"offset_days": 10}, {}]}},
+    )
+    assert offset_change.status_code == 422
+    assert "in flight" in offset_change.json()["detail"]
+
+    count_change = await client.patch(
+        f"/api/v1/outreach/campaigns/{campaign_id}",
+        json={"config": {"steps": [{}, {}]}},
+    )
+    assert count_change.status_code == 422
+
+    # Guidance-only (same count, same offsets) still lands.
+    guidance_only = await client.patch(
+        f"/api/v1/outreach/campaigns/{campaign_id}",
+        json={"config": {"steps": [{}, {"guidance": "Short bump."}, {}]}},
+    )
+    assert guidance_only.status_code == 200, guidance_only.text
+    steps = guidance_only.json()["config"]["steps"]
+    assert [s["offset_days"] for s in steps] == [0, 7, 14]
+    assert steps[1]["guidance"] == "Short bump."
+
+
+async def test_patch_campaign_rejects_bad_config(client):
+    campaign_id = (
+        await client.post(
+            "/api/v1/outreach/campaigns", json={"name": "Sweep", "config": VALID_CONFIG}
+        )
+    ).json()["id"]
+
+    bad_mode = await client.patch(
+        f"/api/v1/outreach/campaigns/{campaign_id}",
+        json={"config": {"mode": "yolo"}},
+    )
+    assert bad_mode.status_code == 422
+
+    # Fields outside the PATCHable surface are rejected, not merged.
+    not_patchable = await client.patch(
+        f"/api/v1/outreach/campaigns/{campaign_id}",
+        json={"config": {"track_clicks": True}},
+    )
+    assert not_patchable.status_code == 422
+
+
+async def test_member_halt_removes_from_review_and_bulk_approve(
+    client, test_session_factory, test_tenant
+):
+    await client.post("/api/v1/prospects/import", json={"prospects": _rows(2)})
+    ids = [i["prospect_id"] for i in (await client.get("/api/v1/prospects")).json()["items"]]
+    campaign_id = (
+        await client.post(
+            "/api/v1/outreach/campaigns",
+            json={"name": "Sweep", "config": VALID_CONFIG, "prospect_ids": ids},
+        )
+    ).json()["id"]
+
+    from backend.app.models import OutreachMember
+    from sqlalchemy import select
+
+    async with test_session_factory() as s:
+        members = (
+            (await s.execute(
+                select(OutreachMember).where(OutreachMember.tenant_id == test_tenant.id)
+            )).scalars().all()
+        )
+        for m in members:
+            m.draft_subject = "Hello"
+            m.draft_body = "Personalized body"
+            m.draft_status = "ready"
+            m.state = "needs_approval"
+        await s.commit()
+        member_ids = [str(m.id) for m in members]
+
+    halted = await client.patch(
+        f"/api/v1/outreach/members/{member_ids[0]}", json={"action": "halt"}
+    )
+    assert halted.status_code == 200, halted.text
+    body = halted.json()
+    assert body["state"] == "halted"
+    assert body["halt_reason"] == "removed_manually"
+    assert body["next_send_at"] is None
+    # The unsent draft is gone with it.
+    assert body["draft_subject"] is None
+    assert body["draft_body"] is None
+    assert body["draft_status"] is None
+
+    # Gone from the review inbox…
+    inbox = await client.get(
+        f"/api/v1/outreach/campaigns/{campaign_id}/members",
+        params={"state": "needs_approval"},
+    )
+    assert inbox.json()["total"] == 1
+    assert inbox.json()["items"][0]["id"] == member_ids[1]
+
+    # …and bulk approve only touches the survivor.
+    bulk = await client.post(
+        f"/api/v1/outreach/campaigns/{campaign_id}/approve-drafts",
+        json={"all": True},
+    )
+    assert bulk.json()["approved"] == 1
+
+
+async def test_member_halt_allowed_from_in_sequence_but_not_terminal(
+    client, test_session_factory, test_tenant
+):
+    await client.post("/api/v1/prospects/import", json={"prospects": _rows(2)})
+    ids = [i["prospect_id"] for i in (await client.get("/api/v1/prospects")).json()["items"]]
+    await client.post(
+        "/api/v1/outreach/campaigns",
+        json={"name": "Sweep", "config": VALID_CONFIG, "prospect_ids": ids},
+    )
+
+    from backend.app.models import OutreachMember
+    from sqlalchemy import select
+
+    async with test_session_factory() as s:
+        members = (
+            (await s.execute(
+                select(OutreachMember).where(OutreachMember.tenant_id == test_tenant.id)
+            )).scalars().all()
+        )
+        # Mid-sequence member with a bump pending — the state PATCH's
+        # draft-edit guard would 409 on, but halt must reach.
+        members[0].state = "in_sequence"
+        members[0].touches_sent = 1
+        members[1].state = "replied"
+        await s.commit()
+        in_seq_id, replied_id = str(members[0].id), str(members[1].id)
+
+    ok = await client.patch(
+        f"/api/v1/outreach/members/{in_seq_id}", json={"action": "halt"}
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["state"] == "halted"
+
+    conflict = await client.patch(
+        f"/api/v1/outreach/members/{replied_id}", json={"action": "halt"}
+    )
+    assert conflict.status_code == 409
+
+
 async def test_activate_requires_email_integration(client):
     await client.post("/api/v1/prospects/import", json={"prospects": _rows(1)})
     pid = (await client.get("/api/v1/prospects")).json()["items"][0]["prospect_id"]
