@@ -199,15 +199,30 @@ async def test_issue_endpoint_returns_agent_ticket(
 
 @pytest.mark.asyncio
 async def test_issue_endpoint_generates_session_id_when_omitted(
-    test_client, test_tenant, ticket_redis_stub
+    test_client, test_tenant, test_session_factory, ticket_redis_stub
 ):
+    """Agent tickets minted without a session id persist a LiveSession
+    row under a UUID id so finalization can land the transcript on an
+    Interaction (extension / bring-your-own-audio flows)."""
     resp = await test_client.post(
         f"{PREFIX}/ws/tickets", json={"role": "agent"}
     )
     assert resp.status_code == 201
     body = resp.json()
-    assert body["session_id"].startswith("s-")
-    assert len(body["session_id"]) > 4
+    session_uuid = uuid.UUID(body["session_id"])  # UUID, not the "s-" form
+
+    from backend.app.models import LiveSession
+    from sqlalchemy import select
+
+    async with test_session_factory() as s:
+        row = (
+            await s.execute(
+                select(LiveSession).where(LiveSession.id == session_uuid)
+            )
+        ).scalar_one_or_none()
+    assert row is not None
+    assert row.tenant_id == test_tenant.id
+    assert row.status == "active"
 
 
 @pytest.mark.asyncio

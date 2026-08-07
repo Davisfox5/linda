@@ -142,7 +142,7 @@ async def test_app(test_session_factory, test_tenant):
     """
     from fastapi import FastAPI
 
-    from backend.app.auth import get_current_tenant
+    from backend.app.auth import get_current_principal, get_current_tenant
     from backend.app.db import get_db
     from backend.app.api.outcomes import router as outcomes_router
     from backend.app.api.ws_tickets import router as ws_tickets_router
@@ -168,11 +168,27 @@ async def test_app(test_session_factory, test_tenant):
             )
             return result.scalar_one()
 
+    async def _override_get_principal():
+        # Human dashboard principal (not api_key) so endpoints that
+        # resolve get_current_principal directly — e.g. /ws/tickets —
+        # skip the API-key entitlement/scope gates, mirroring the
+        # legacy get_current_tenant bypass above.
+        from backend.app.auth import AuthPrincipal
+
+        tenant = await _override_get_tenant()
+        return AuthPrincipal(
+            tenant=tenant,
+            user=None,
+            role="admin",
+            source="clerk",
+        )
+
     app = FastAPI()
     app.include_router(outcomes_router, prefix="/api/v1", tags=["outcomes"])
     app.include_router(ws_tickets_router, prefix="/api/v1", tags=["ws-tickets"])
     app.dependency_overrides[get_db] = _override_get_db
     app.dependency_overrides[get_current_tenant] = _override_get_tenant
+    app.dependency_overrides[get_current_principal] = _override_get_principal
     try:
         yield app
     finally:
