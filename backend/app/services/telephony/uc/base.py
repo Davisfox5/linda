@@ -102,6 +102,8 @@ def get_provider(name: str) -> "UCRecordingProvider":
             from backend.app.services.telephony.uc import webex  # noqa: F401
         elif name == "zoom_phone":
             from backend.app.services.telephony.uc import zoom_phone  # noqa: F401
+        elif name == "teams_compliance":
+            from backend.app.services.telephony.uc import teams_compliance  # noqa: F401
         else:
             raise KeyError(f"Unknown UC provider: {name!r}")
     return _PROVIDERS[name]

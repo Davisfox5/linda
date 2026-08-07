@@ -161,6 +161,15 @@ class Settings(BaseSettings):
 
     # ── Meeting Bots (Recall.ai) ─────────────────────────
     RECALL_AI_API_KEY: str = ""
+    # Base URL for the Recall-compatible vendor API. Region-specific
+    # Recall deployments (us-east-1, eu-central-1, ...) override this.
+    RECALL_API_BASE: str = "https://us-east-1.recall.ai"
+    # Shared secret the vendor's bot-status webhook must present
+    # (header ``X-Meeting-Bot-Secret``), compared constant-time in
+    # ``api/meeting_bots.py``. Empty means the webhook route fails
+    # closed (401 on every delivery) — set this before onboarding any
+    # tenant to ``meeting_assist``.
+    MEETING_BOT_WEBHOOK_SECRET: str = ""
 
     # ── OAuth — Google Workspace ─────────────────────────
     GOOGLE_CLIENT_ID: str = ""
@@ -169,6 +178,32 @@ class Settings(BaseSettings):
     # ── OAuth — Microsoft ────────────────────────────────
     MICROSOFT_CLIENT_ID: str = ""
     MICROSOFT_CLIENT_SECRET: str = ""
+
+    # ── Microsoft Teams compliance recording (Stream 3) ──
+    # App-only (client-credentials) Graph auth for LINDA's compliance
+    # recording bot identity. Separate from MICROSOFT_CLIENT_ID/SECRET
+    # above: those are Stream 2's delegated user-OAuth for Mail/Calendar
+    # scopes; the compliance bot acts as itself, not as a signed-in user.
+    # See services/teams_recording/graph_app_auth.py.
+    TEAMS_BOT_APP_ID: str = ""
+    TEAMS_BOT_APP_SECRET: str = ""
+    # LINDA's own AAD tenant that owns the bot app registration — NOT a
+    # customer's tenant. Customer tenants are resolved per-Integration
+    # (provider_config["aad_tenant_id"]), populated when a customer's
+    # Teams admin completes the PowerShell in services/teams_recording/policy.py.
+    TEAMS_TENANT_ID: str = ""
+    # Shared secret Graph echoes back on every /teams/notification change
+    # notification (clientState). Rotate by redeploying with a new value
+    # and re-creating subscriptions — Graph has no separate rotation
+    # endpoint. Distinct from GRAPH_CLIENT_STATE above (that one guards
+    # the email-ingest Graph subscriptions, a different app registration
+    # and a different Graph resource family).
+    TEAMS_GRAPH_CLIENT_STATE: str = ""
+    # Shared secret the (future) .NET media bot presents as the
+    # X-LINDA-Bot-Secret header on every POST /teams/bot/callback. Empty
+    # (the default until the bot is deployed) keeps the endpoint in its
+    # lenient/placeholder acceptance mode — see api/teams_recording.py.
+    TEAMS_BOT_CALLBACK_SECRET: str = ""
 
     # ── OAuth — Slack (manager-alert delivery) ───────────
     SLACK_CLIENT_ID: str = ""
