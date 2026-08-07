@@ -102,7 +102,8 @@ For every customer that wants Teams compliance recording:
 
 ## What the scaffold gives you today (no further action required)
 
-These are already in place from this PR:
+These are already in place (see ``DEPLOYMENT_RUNBOOK.md`` for the
+step-by-step version of everything below):
 
 - [x] Python control-plane router at
       ``POST /api/v1/teams/notification`` and
@@ -111,15 +112,43 @@ These are already in place from this PR:
       ``text/plain`` per Graph spec).
 - [x] Notification batch parser with per-subscription ``clientState``
       verification.
+- [x] **Notification persistence**: ``communications/callRecords``
+      entries upsert a ``TeamsCallRecord`` row;
+      ``communications/onlineMeetings/getAllRecordings`` entries upsert
+      a ``UcRecordingJob`` (``provider="teams_compliance"``) and
+      dispatch the existing ``fetch_uc_recording`` Celery pipeline —
+      the same one RingCentral/Webex/Zoom Phone recordings ride.
+- [x] **Media-bot callback contract (v1)**: versioned, shared-secret-
+      gated, tested — ``session.started``/``session.stopped`` persist a
+      ``TeamsCallRecord``; ``audio.available`` bridges straight into an
+      ``Interaction`` + ``process_voice_interaction``, mirroring
+      ``POST /interactions/ingest-recording``'s ``audio_url`` mode.
+      This is the *receiving* half only — the bot that would call it
+      isn't built (see "Decision: build vs license" below).
 - [x] App-only Graph auth wrapper (MSAL ``ConfidentialClientApplication``).
+- [x] Graph subscription **create/renew/delete** +
+      ``bootstrap_teams_integration`` (per-customer ``Integration`` row
+      + subscriptions in one call) in
+      ``services/teams_recording/teams_graph.py``.
+- [x] ``renew_due_teams_subscriptions`` — the renewal sweep function;
+      **not yet wired to Celery beat** (see next section).
 - [x] ``TeamsCallRecord`` table + Alembic migration
       (``teams_001_teams_call_record``).
 - [x] Stub ``MediaBot`` that always reports "not deployed" — keeps the
       production rollout honest.
 - [x] Customer PowerShell template helper.
 - [x] Test coverage of all of the above against synthetic Graph
-      payloads.
+      payloads and fake Graph HTTP responses.
 
-When the bot is ready, swap ``StubMediaBot`` for the real adapter and
-add a Celery-beat renewal scheduler — those are the only two LINDA-
-side changes left.
+Two LINDA-side changes remain before this is a fully closed loop:
+
+- [ ] **Add the Celery-beat wiring** for ``renew_due_teams_subscriptions``
+      in ``backend/app/tasks.py`` (exact task + schedule snippet in
+      ``DEPLOYMENT_RUNBOOK.md`` §3). Not done by this round because
+      ``tasks.py``/``main.py`` edits are a sensitive path for this
+      workstream.
+- [ ] **Register a real ``MediaBot``** once the .NET bot exists (swap
+      out ``StubMediaBot`` via ``set_media_bot_factory`` — see
+      ``bot_interface.py``), and set ``TEAMS_BOT_CALLBACK_SECRET`` so
+      the callback endpoint starts enforcing the shared secret instead
+      of its lenient placeholder mode.

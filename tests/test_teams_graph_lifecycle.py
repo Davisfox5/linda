@@ -19,7 +19,8 @@ import pytest
 
 from backend.app.services.teams_recording.graph_app_auth import GraphAppAuth, GraphToken
 
-pytestmark = pytest.mark.asyncio
+# Marked individually below (rather than module-wide) since the two
+# notification_url tests are plain sync functions.
 
 
 class _FakeResponse:
@@ -89,6 +90,7 @@ def test_notification_url_raises_when_unconfigured(monkeypatch):
 # ── renew_subscription / delete_subscription ─────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_renew_subscription_patches_and_returns_new_expiration():
     from backend.app.services.teams_recording.teams_graph import renew_subscription
 
@@ -111,6 +113,7 @@ async def test_renew_subscription_patches_and_returns_new_expiration():
     assert kwargs["headers"]["Authorization"] == "Bearer fixture-bearer"
 
 
+@pytest.mark.asyncio
 async def test_renew_subscription_raises_on_graph_error():
     from backend.app.services.teams_recording.subscriptions import SubscriptionValidationError
     from backend.app.services.teams_recording.teams_graph import renew_subscription
@@ -120,6 +123,7 @@ async def test_renew_subscription_raises_on_graph_error():
         await renew_subscription("gone", auth=_configured_auth(), http_client=fake_client)
 
 
+@pytest.mark.asyncio
 async def test_delete_subscription_sends_delete():
     from backend.app.services.teams_recording.teams_graph import delete_subscription
 
@@ -130,6 +134,7 @@ async def test_delete_subscription_sends_delete():
     assert url == "https://graph.microsoft.com/v1.0/subscriptions/sub-123"
 
 
+@pytest.mark.asyncio
 async def test_delete_subscription_tolerates_already_gone():
     from backend.app.services.teams_recording.teams_graph import delete_subscription
 
@@ -138,6 +143,7 @@ async def test_delete_subscription_tolerates_already_gone():
     await delete_subscription("sub-123", auth=_configured_auth(), http_client=fake_client)
 
 
+@pytest.mark.asyncio
 async def test_delete_subscription_raises_on_real_error():
     from backend.app.services.teams_recording.subscriptions import SubscriptionValidationError
     from backend.app.services.teams_recording.teams_graph import delete_subscription
@@ -150,6 +156,7 @@ async def test_delete_subscription_raises_on_real_error():
 # ── bootstrap_teams_integration ───────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_bootstrap_teams_integration_creates_integration_and_subscriptions(
     test_session_factory, test_tenant, monkeypatch
 ):
@@ -206,6 +213,7 @@ async def test_bootstrap_teams_integration_creates_integration_and_subscriptions
         get_settings.cache_clear()
 
 
+@pytest.mark.asyncio
 async def test_bootstrap_teams_integration_requires_client_state(
     test_session_factory, test_tenant, monkeypatch
 ):
@@ -228,6 +236,7 @@ async def test_bootstrap_teams_integration_requires_client_state(
 # ── renew_due_teams_subscriptions ─────────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_renew_due_teams_subscriptions_renews_only_expiring_entries(
     test_session_factory, test_tenant
 ):
@@ -297,6 +306,7 @@ async def test_renew_due_teams_subscriptions_renews_only_expiring_entries(
         assert subs["sub-not-due-yet"]["expiration"] == (now + timedelta(hours=6)).isoformat()
 
 
+@pytest.mark.asyncio
 async def test_renew_due_teams_subscriptions_records_failure_without_raising(
     test_session_factory, test_tenant
 ):

@@ -6,12 +6,19 @@ Compliance Recording partner with a deployed media bot capturing real
 calls". Everything below is a planning artifact — none of it is
 automatable from inside Claude. Every section is a user-only workstream.
 
+For the step-by-step execution version of this doc (exact env vars,
+commands, and a verification checklist), see
+[`DEPLOYMENT_RUNBOOK.md`](DEPLOYMENT_RUNBOOK.md) in this same directory.
+
 ## Status snapshot
 
 | Component | Status | Owner |
 |---|---|---|
 | Python control plane (this PR) | ✅ scaffold landed | Stream 3 |
-| Subscription bookkeeping (DB, renewal scheduler) | 🟡 model + parser only; no scheduler | Follow-on |
+| Notification persistence (TeamsCallRecord + UcRecordingJob) | ✅ landed — `services/teams_recording/ingest.py` | Stream 3 |
+| Media-bot callback contract (`/teams/bot/callback` v1) | ✅ landed — receiving half only, bot itself not built | Stream 3 |
+| Subscription create/renew/delete + per-customer bootstrap | ✅ landed — `services/teams_recording/teams_graph.py`; bookkeeping lives in `Integration.provider_config`, not a new table | Stream 3 |
+| Celery-beat renewal scheduling | 🟡 `renew_due_teams_subscriptions` exists; beat wiring in `tasks.py` NOT done (sensitive-path — see `DEPLOYMENT_RUNBOOK.md` §3) | Integrator |
 | App-only Graph auth (MSAL) | ✅ scaffold landed; needs env vars | User |
 | .NET stateful media bot | ❌ not started | User-commissioned workstream |
 | Azure infrastructure (App Service / ACA) | ❌ not started | User |
@@ -203,15 +210,29 @@ users' calls. There is no per-call activation.
 
 ## Where this scaffold helps when the bot eventually lands
 
-The Python control plane in this PR is the steady-state of the
-LINDA-side glue. When the .NET bot is ready, the integration work is:
+The Python control plane in this repo is the steady-state of the
+LINDA-side glue. Notification persistence, the bot-callback contract,
+and subscription create/renew/delete/bootstrap are already implemented
+and tested (see `DEPLOYMENT_RUNBOOK.md`). When the .NET bot is ready,
+the remaining integration work is:
 
-1. Set the three Teams env vars on the backend.
-2. Replace ``StubMediaBot`` with a ``DotnetMediaBot`` adapter that
-   speaks to the deployed bot (via HTTPS).
-3. Wire the subscription renewal scheduler (Celery beat) to the
-   ``create_subscription`` helper in ``subscriptions.py``.
-4. Persist ``TeamsCallRecord`` rows from incoming notifications.
+1. Set the Teams env vars on the backend (`DEPLOYMENT_RUNBOOK.md` §2),
+   including `TEAMS_BOT_CALLBACK_SECRET` once the bot is about to send
+   real traffic.
+2. Register a real ``MediaBot`` (via
+   ``bot_interface.set_media_bot_factory``) whose ``status().deployed``
+   is ``True`` — required to get past `/teams/bot/callback`'s
+   "not deployed" 503 gate at all, even just to start receiving
+   ``session.started``/``audio.available`` events. It doesn't need a
+   fully-implemented ``attach_to_call``/``detach`` (those are the
+   *outbound* calls LINDA would make to the bot, which this round
+   never exercises) to unlock the *inbound* callback processing.
+3. Add the Celery-beat wiring for `renew_due_teams_subscriptions`
+   (`DEPLOYMENT_RUNBOOK.md` §3 has the exact task + schedule to add to
+   `tasks.py` — not done in this round; `backend/app/tasks.py` is a
+   sensitive path this workstream doesn't edit directly).
+4. Run `bootstrap_teams_integration` per customer once their Azure AD
+   consent + PowerShell (step 6) are done.
 
 None of those changes touch other streams' code or the LINDA
 transcription pipeline contract — that's the point of landing the

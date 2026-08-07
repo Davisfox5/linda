@@ -245,6 +245,13 @@ celery_app.conf.update(
             "task": "churn_train_all_tenants",
             "schedule": crontab(minute=0, hour=7, day_of_week=1),
         },
+        # Teams Graph subscriptions expire in as little as ~60 minutes
+        # and Microsoft never retries a lapsed one — renew on a cadence
+        # tighter than the sweep's within_minutes=15 slack.
+        "renew-teams-subscriptions": {
+            "task": "renew_teams_subscriptions",
+            "schedule": crontab(minute="*/15"),
+        },
         # Audio retention runs daily — tenants that care about < 24h audio
         # windows are rare; daily amortizes the S3 list-delete against 23
         # near-noop hourly sweeps.
@@ -5500,6 +5507,29 @@ def event_retention_sweep() -> Dict[str, Any]:
     async def _runner() -> Dict[str, Any]:
         async with async_session() as db:
             return await run_event_retention_sweep(db)
+
+    return _run_async(_runner)
+
+
+@celery_app.task(name="renew_teams_subscriptions")
+def renew_teams_subscriptions() -> Dict[str, Any]:
+    """Renew Microsoft Graph subscriptions nearing expiry.
+
+    Graph's shortest-lived subscribed resource
+    (``onlineMeetings/getAllRecordings``) caps at ~60 minutes, so beat
+    runs this every 15 minutes against the sweep's default
+    ``within_minutes=15`` slack. Microsoft sends no retry/alert when a
+    subscription lapses — without this sweep, Teams compliance
+    recordings silently stop arriving.
+    """
+    from backend.app.db import async_session
+    from backend.app.services.teams_recording.teams_graph import (
+        renew_due_teams_subscriptions,
+    )
+
+    async def _runner() -> Dict[str, Any]:
+        async with async_session() as db:
+            return await renew_due_teams_subscriptions(db)
 
     return _run_async(_runner)
 
