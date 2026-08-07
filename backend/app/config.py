@@ -284,6 +284,12 @@ class Settings(BaseSettings):
     # the daily quota across the send window instead of bursting it all
     # the moment the window opens.
     OUTREACH_MAX_SENDS_PER_TICK: int = 5
+    # House copy-quality gate (services/outreach/copy_gate.py) on
+    # prospect-facing campaign sends: auto-mode drafts that fail park as
+    # needs_approval instead of self-approving, and the scheduler
+    # re-parks any failing draft at send time rather than sending it.
+    # Emergency off-switch only — transactional mail is never gated.
+    OUTREACH_COPY_GATE_ENABLED: bool = True
 
     # ── Governed auto-executor (action plans) ──────────────
     # Global kill switch for the auto-executor. Default OFF: the beat
