@@ -24,18 +24,15 @@ from tests.test_teams_common import (  # noqa: F401 — fixture re-export
     teams_test_client,
 )
 
-pytestmark = pytest.mark.asyncio
-
-
-def _sync(fn):
-    """Undo the module-level asyncio mark for the one plain-sync test
-    below (``pytest.mark.asyncio`` on a non-async function is a warning)."""
-    return pytest.mark.asyncio(None)(fn) if False else fn
+# Every test below is async EXCEPT test_notification_to_uc_event_extracts_*,
+# which is pure-function/no-I/O — so we mark tests individually rather than
+# module-wide (a module-level ``pytestmark`` would warn on that one sync test).
 
 
 # ── resolve_teams_integration / notification_to_uc_event (pure logic) ──
 
 
+@pytest.mark.asyncio
 async def test_resolve_teams_integration_matches_by_aad_tenant_id(
     test_session_factory, test_tenant, seeded_teams_integration
 ):
@@ -72,6 +69,7 @@ def test_notification_to_uc_event_extracts_meeting_and_recording_ids():
 # ── HTTP-level: callRecords resource → TeamsCallRecord ──────────────────
 
 
+@pytest.mark.asyncio
 async def test_call_record_notification_upserts_teams_call_record(
     teams_test_client, test_tenant, test_session_factory, seeded_teams_integration
 ):
@@ -98,6 +96,7 @@ async def test_call_record_notification_upserts_teams_call_record(
         assert record.certification_status == "bot_required"
 
 
+@pytest.mark.asyncio
 async def test_call_record_notification_is_idempotent_on_replay(
     teams_test_client, test_tenant, test_session_factory, seeded_teams_integration
 ):
@@ -119,6 +118,7 @@ async def test_call_record_notification_is_idempotent_on_replay(
 # ── HTTP-level: onlineMeetings/getAllRecordings → UcRecordingJob ────────
 
 
+@pytest.mark.asyncio
 async def test_recording_notification_upserts_uc_recording_job_and_enqueues(
     teams_test_client,
     test_tenant,
@@ -168,6 +168,7 @@ async def test_recording_notification_upserts_uc_recording_job_and_enqueues(
         )
 
 
+@pytest.mark.asyncio
 async def test_recording_job_duplicate_delivery_does_not_reenqueue_when_in_progress(
     teams_test_client,
     test_tenant,
@@ -211,6 +212,7 @@ async def test_recording_job_duplicate_delivery_does_not_reenqueue_when_in_progr
         assert len(jobs) == 1
 
 
+@pytest.mark.asyncio
 async def test_notification_unknown_aad_tenant_is_skipped_gracefully(
     teams_test_client, test_session_factory
 ):
@@ -231,6 +233,7 @@ async def test_notification_unknown_aad_tenant_is_skipped_gracefully(
 # ── clientState enforcement when TEAMS_GRAPH_CLIENT_STATE is set ───────
 
 
+@pytest.mark.asyncio
 async def test_notification_rejects_bad_client_state_when_configured(
     teams_test_client, monkeypatch
 ):
@@ -250,6 +253,7 @@ async def test_notification_rejects_bad_client_state_when_configured(
 # ── TeamsComplianceProvider (UC adapter) ─────────────────────────────────
 
 
+@pytest.mark.asyncio
 async def test_teams_compliance_provider_verify_webhook_extracts_recording_event():
     from backend.app.services.telephony.uc.base import get_provider
 
@@ -262,6 +266,7 @@ async def test_teams_compliance_provider_verify_webhook_extracts_recording_event
     assert event.recording_id == "RG9jLTk5"
 
 
+@pytest.mark.asyncio
 async def test_teams_compliance_provider_verify_webhook_rejects_call_record_only_batch():
     from backend.app.services.telephony.uc.base import WebhookVerificationError, get_provider
 
@@ -274,6 +279,7 @@ async def test_teams_compliance_provider_verify_webhook_rejects_call_record_only
 
 
 @respx.mock
+@pytest.mark.asyncio
 async def test_teams_compliance_provider_fetch_recording_uses_app_only_bearer(monkeypatch):
     from backend.app.services.telephony.uc.base import UCWebhookEvent, get_provider
     from backend.app.services.telephony.uc import teams_compliance as tc_module

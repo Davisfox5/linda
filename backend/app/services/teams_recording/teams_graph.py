@@ -71,6 +71,7 @@ module is not allowed to touch.
 
 from __future__ import annotations
 
+import copy
 import logging
 import uuid
 from dataclasses import dataclass
@@ -79,6 +80,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.app.config import get_settings
 from backend.app.models import Integration
@@ -332,6 +334,7 @@ async def bootstrap_teams_integration(
         "aad_tenant_id": aad_tenant_id,
         _SUBSCRIPTIONS_KEY: subs_state,
     }
+    flag_modified(existing, "provider_config")  # belt-and-suspenders for JSONB
     await db.commit()
     return existing
 
@@ -366,7 +369,12 @@ async def renew_due_teams_subscriptions(
     deadline = now + timedelta(minutes=within_minutes)
 
     for integ in integrations:
-        subs = list((integ.provider_config or {}).get(_SUBSCRIPTIONS_KEY) or [])
+        # Deep-copy before mutating: entries would otherwise be the SAME
+        # dict objects still referenced by ``integ.provider_config``, so
+        # mutating them in place before reassigning the column makes
+        # SQLAlchemy's content-based history comparison see "no change"
+        # and silently skip the UPDATE.
+        subs = copy.deepcopy((integ.provider_config or {}).get(_SUBSCRIPTIONS_KEY) or [])
         changed = False
         for entry in subs:
             try:
@@ -406,6 +414,7 @@ async def renew_due_teams_subscriptions(
             )
         if changed:
             integ.provider_config = {**(integ.provider_config or {}), _SUBSCRIPTIONS_KEY: subs}
+            flag_modified(integ, "provider_config")  # belt-and-suspenders for JSONB
 
     if results:
         await db.commit()
