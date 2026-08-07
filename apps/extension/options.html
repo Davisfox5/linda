@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>LINDA Meeting Listener — Options</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>LINDA Meeting Listener</h1>
+
+      <p class="notice">
+        <strong>Requires an Enterprise LINDA API key with live-transcription
+        access.</strong> Create one from your LINDA workspace's API keys
+        settings — this extension authenticates as that key, not as a
+        specific user.
+      </p>
+
+      <form id="options-form">
+        <label class="field">
+          <span>LINDA API base URL</span>
+          <input
+            type="url"
+            id="api-base"
+            placeholder="https://api.your-linda-instance.com"
+            required
+          />
+          <small>Where the backend (ticket minting + WebSocket) is reachable.</small>
+        </label>
+
+        <label class="field">
+          <span>API key</span>
+          <input type="password" id="api-key" placeholder="csk_..." required />
+          <small>Stored locally in this browser profile only (chrome.storage.local). Never sent anywhere but the API base URL above.</small>
+        </label>
+
+        <label class="field">
+          <span>LINDA app URL (optional)</span>
+          <input type="url" id="app-url" placeholder="https://app.your-linda-instance.com" />
+          <small>
+            Used for the popup's "Open in LINDA" link. Leave blank to reuse
+            the API base URL (correct when LINDA is deployed behind a single
+            reverse-proxied host).
+          </small>
+        </label>
+
+        <label class="field checkbox">
+          <input type="checkbox" id="mic-default" />
+          <span>Mix in my microphone by default</span>
+        </label>
+
+        <div class="actions">
+          <button type="submit" class="primary">Save</button>
+          <button type="button" id="test-mic">Test microphone access</button>
+        </div>
+        <p id="mic-test-result" class="hint"></p>
+        <p id="save-result" class="hint"></p>
+      </form>
+
+      <section class="limits">
+        <h2>Limitations</h2>
+        <ul>
+          <li>Only captures meetings running as a <strong>browser tab</strong> (Google Meet, Zoom Web, Teams Web, etc.) — native desktop apps (Zoom.app, Teams.exe) are not captured.</li>
+          <li>The captured tab must stay open and must not navigate away mid-call, or capture stops.</li>
+          <li>Microphone mixing requires granting the browser's microphone permission to this extension once — use "Test microphone access" above.</li>
+          <li>Requires an Enterprise-tier LINDA API key with live access.</li>
+        </ul>
+        <h2>Consent</h2>
+        <p>
+          Recording or transcribing a call may require the other participants'
+          consent depending on your jurisdiction and company policy. You are
+          responsible for obtaining any consent required before starting a
+          listening session.
+        </p>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

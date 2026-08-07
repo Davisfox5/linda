@@ -1,0 +1,14 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>LINDA offscreen audio worker</title>
+  </head>
+  <body>
+    <!-- Invisible document. Holds the MediaRecorder/AudioContext/WebSocket
+         for the duration of a listening session so it survives the
+         background service worker being suspended. Never shown to the
+         user. -->
+    <script src="offscreen.js"></script>
+  </body>
+</html>

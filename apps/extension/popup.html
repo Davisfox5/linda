@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>LINDA Meeting Listener</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="head">
+        <h1>LINDA Meeting Listener</h1>
+        <span id="status-pill" class="pill pill-idle">Idle</span>
+      </header>
+
+      <p id="config-warning" class="warning hidden">
+        Set your LINDA API base URL and API key first.
+        <button id="open-options" type="button" class="link-btn">Open options</button>
+      </p>
+
+      <p id="error-text" class="error hidden"></p>
+
+      <label class="mic-toggle">
+        <input type="checkbox" id="mic-toggle" />
+        Mix in my microphone
+      </label>
+
+      <div class="actions">
+        <button id="start-btn" type="button" class="primary">Start listening to this tab</button>
+        <button id="stop-btn" type="button" class="danger hidden">Stop</button>
+        <button id="restart-btn" type="button" class="primary hidden">Restart</button>
+      </div>
+
+      <a id="open-in-linda" href="#" target="_blank" rel="noopener noreferrer" class="hidden">
+        Open in LINDA →
+      </a>
+
+      <p class="hint">
+        Captures audio from your currently active tab (the meeting you have
+        open). Nothing joins your call — this only listens to what your
+        browser tab is already playing/recording.
+      </p>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

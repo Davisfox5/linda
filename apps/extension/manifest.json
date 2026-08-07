@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "LINDA Meeting Listener",
+  "short_name": "LINDA Listener",
+  "version": "0.1.0",
+  "description": "Streams this browser tab's meeting audio (optionally mixed with your mic) into LINDA's live transcription. No bot joins your call — you run the meeting, this only listens to your own tab.",
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "activeTab"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "LINDA Meeting Listener"
+  },
+  "options_page": "options.html",
+  "minimum_chrome_version": "116"
+}
