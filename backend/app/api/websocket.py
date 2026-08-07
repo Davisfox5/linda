@@ -837,6 +837,9 @@ async def _dispatch_batch_analysis(
     )
 
     interaction_id: Optional[uuid.UUID] = None
+    completed_tenant_id: Optional[uuid.UUID] = None
+    completed_source: Optional[str] = None
+    completed_external_call_id: Optional[str] = None
 
     try:
         sess_uuid = uuid.UUID(session_id)
@@ -892,6 +895,11 @@ async def _dispatch_batch_analysis(
             sess_row.transcript_buffer = segments_dicts
 
             interaction_id = interaction.id
+            completed_tenant_id = sess_row.tenant_id
+            completed_source = sess_row.source
+            completed_external_call_id = getattr(
+                sess_row, "external_call_id", None
+            )
     except Exception:
         logger.exception("Failed to finalize live session %s", session_id)
         interaction_id = None
@@ -902,6 +910,24 @@ async def _dispatch_batch_analysis(
 
     if interaction_id is None:
         return
+
+    # Session-discovery webhook: API consumers polling nothing — they
+    # get told the session is over and where its interaction landed.
+    if completed_tenant_id is not None:
+        from backend.app.services.live_session_events import (
+            emit_live_session_event,
+        )
+
+        await emit_live_session_event(
+            completed_tenant_id,
+            session_id,
+            "live_session.completed",
+            {
+                "source": completed_source,
+                "external_call_id": completed_external_call_id,
+                "interaction_id": interaction_id,
+            },
+        )
 
     # Enqueue the existing voice pipeline. It detects the pre-populated
     # transcript and skips audio download + transcription, going straight

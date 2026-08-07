@@ -30,6 +30,8 @@ WEBHOOK_EVENTS: Dict[str, str] = {
 
     # Live-call signals (mirrors WebSocket brief_alert kinds for external
     # integrations like Slack/Jira that subscribe to the same events).
+    "live_session.started":        "A live transcription session began (any ingress).",
+    "live_session.completed":      "A live session ended; transcript persisted to its interaction.",
     "brief_alert.churn":           "Live call: new churn signal.",
     "brief_alert.upsell":          "Live call: upsell opportunity.",
     "brief_alert.escalation":      "Live call: caller requested escalation.",

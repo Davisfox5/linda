@@ -1450,9 +1450,42 @@ class LiveSession(Base):
     interaction_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("interactions.id"))
     source: Mapped[Optional[str]] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="active")
+    # Provider-side call identifier (Twilio CallSid, SIPREC session id,
+    # meeting-bot id, …) so dialers/CRMs can screen-pop the live view by
+    # the id they already hold (GET /live-sessions/lookup).
+    external_call_id: Mapped[Optional[str]] = mapped_column(String, index=True)
     transcript_buffer: Mapped[list] = mapped_column(JSONB, default=list)
     coaching_state: Mapped[dict] = mapped_column(JSONB, default=dict)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class MeetingBotJob(Base):
+    """Lifecycle row for a vendor meeting bot (Zoom/Meet/Teams meetings).
+
+    One row per bot dispatched to a meeting URL via the meeting-bot
+    connector. The vendor's bot id anchors webhook correlation; the
+    linked ``LiveSession`` carries the actual transcript. Vendor webhook
+    handlers resolve tenant context from the bot metadata LINDA attached
+    at creation (never from the inbound payload alone).
+    """
+
+    __tablename__ = "meeting_bot_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    live_session_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("live_sessions.id", ondelete="SET NULL")
+    )
+    requested_by_user_id: Mapped[Optional[uuid.UUID]] = mapped_column(ForeignKey("users.id"))
+    provider: Mapped[str] = mapped_column(String, default="recall")
+    bot_id: Mapped[Optional[str]] = mapped_column(String, index=True)
+    meeting_url: Mapped[str] = mapped_column(Text, nullable=False)
+    platform: Mapped[Optional[str]] = mapped_column(String)  # zoom | meet | teams | unknown
+    status: Mapped[str] = mapped_column(String, default="requested")
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    last_error: Mapped[Optional[str]] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 

@@ -125,6 +125,9 @@ API_KEY_SCOPES: frozenset[str] = frozenset(
         # integrations
         "crm:sync",
         "oauth:write",
+        # live transcription (Enterprise; see docs/api/live-transcription.md)
+        "live:read",
+        "live:write",
         # GDPR
         "gdpr:export",
         "gdpr:delete",

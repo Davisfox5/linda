@@ -92,6 +92,14 @@ scopes:
     - POST   /api/v1/onboarding/sessions/{session_id}/complete
     - POST   /api/v1/onboarding/sessions/{session_id}/abandon
 
+  live:read:
+    - POST   /api/v1/ws/tickets            # role=monitor (Enterprise: live_transcription_api)
+
+  live:write:
+    - POST   /api/v1/ws/tickets            # role=agent (Enterprise: live_transcription_api)
+    - POST   /api/v1/meeting-bots
+    - DELETE /api/v1/meeting-bots/{job_id}
+
   gdpr:export:
     - GET    /api/v1/tenants/{tenant_id}/export
 

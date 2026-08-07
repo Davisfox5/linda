@@ -753,6 +753,7 @@ class SiprecBridge:
                 agent_id=agent_user_id or _require_agent_user_id(),
                 source=provider,
                 status="live",
+                external_call_id=src_call_id or recording_session_id,
                 started_at=datetime.now(timezone.utc),
             )
             db.add(live)
@@ -770,6 +771,20 @@ class SiprecBridge:
             )
             db.add(siprec)
             await db.commit()
+
+            from backend.app.services.live_session_events import (
+                emit_live_session_event,
+            )
+
+            await emit_live_session_event(
+                tenant_id,
+                str(live.id),
+                "live_session.started",
+                {
+                    "source": provider,
+                    "external_call_id": src_call_id or recording_session_id,
+                },
+            )
             return live.id
 
     async def _persist_stopped(

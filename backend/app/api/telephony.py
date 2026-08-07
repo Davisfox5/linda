@@ -141,9 +141,19 @@ async def twilio_voice_webhook(
         agent_id=tenant_id,  # populated when an agent claims the session
         source="twilio",
         status="active",
+        external_call_id=form_dict.get("CallSid") or None,
     )
     db.add(session)
     await db.flush()
+
+    from backend.app.services.live_session_events import emit_live_session_event
+
+    await emit_live_session_event(
+        tenant_id,
+        str(session.id),
+        "live_session.started",
+        {"source": "twilio", "external_call_id": session.external_call_id},
+    )
 
     base = str(request.base_url).rstrip("/").replace("http://", "wss://").replace(
         "https://", "wss://"
@@ -551,11 +561,10 @@ def _attach_deepgram_diarization(
 
 def _make_paralinguistic_publisher(redis_conn: Any, session_id: str):
     """Build the pump's ``publish`` callback: annotate arousal and emit
-    on the live-coaching Redis channel over the session's shared
-    connection. The UI already subscribes to this channel for
-    ``LiveFeatureWindow`` snapshots; paralinguistic data lands under the
-    ``paralinguistic`` subkey so existing clients ignore what they don't
-    understand.
+    on the session's live event channel (``live:{id}:events`` — the one
+    the monitor WS and embeds actually relay). Snapshots go out as a
+    ``features`` event with the data under the ``paralinguistic`` subkey
+    so existing clients ignore what they don't understand.
     """
 
     async def _publish(features: Any) -> None:
@@ -569,8 +578,8 @@ def _make_paralinguistic_publisher(redis_conn: Any, session_id: str):
             annotated = features.as_dict()
 
         await redis_conn.publish(
-            f"livecoach:{session_id}",
-            json.dumps({"paralinguistic": annotated}),
+            f"live:{session_id}:events",
+            json.dumps({"type": "features", "paralinguistic": annotated}),
         )
 
     return _publish
@@ -623,9 +632,19 @@ async def signalwire_voice_webhook(
         agent_id=tenant_id,
         source="signalwire",
         status="active",
+        external_call_id=form_dict.get("CallSid") or None,
     )
     db.add(session)
     await db.flush()
+
+    from backend.app.services.live_session_events import emit_live_session_event
+
+    await emit_live_session_event(
+        tenant_id,
+        str(session.id),
+        "live_session.started",
+        {"source": "signalwire", "external_call_id": session.external_call_id},
+    )
 
     base = str(request.base_url).rstrip("/").replace("http://", "wss://").replace(
         "https://", "wss://"
@@ -813,9 +832,21 @@ async def telnyx_voice_webhook(
             agent_id=tenant_id,
             source="telnyx",
             status="active",
+            external_call_id=call_control_id or None,
         )
         db.add(session)
         await db.flush()
+
+        from backend.app.services.live_session_events import (
+            emit_live_session_event,
+        )
+
+        await emit_live_session_event(
+            tenant_id,
+            str(session.id),
+            "live_session.started",
+            {"source": "telnyx", "external_call_id": call_control_id},
+        )
 
         await _telnyx_remember_session(call_control_id, session.id)
 
