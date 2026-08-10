@@ -238,6 +238,47 @@ def test_search_sent_email_not_connected_passes_through():
     assert result["connected"] is False
 
 
+# ── search_interactions (regression: missing `db=` kwarg) ──────────────────
+#
+# Regression: commit 90ecf8d dropped the `db=ctx.db` kwarg from
+# _exec_search_interactions' call into SearchService.search, whose first
+# parameter is `db: AsyncSession`. Every search_interactions call then raised
+# TypeError: SearchService.search() missing 1 required positional argument:
+# 'db', swallowed by the executor's except block as {"error": "search
+# failed: ..."}. Guard the argument itself, and bind the captured call
+# kwargs against the live signature so a future rename/reorder is caught too.
+
+
+def test_search_interactions_passes_db_session_to_search_service():
+    import inspect
+
+    from backend.app.services.linda_agent import dispatch_tool
+    from backend.app.services.search_service import SearchService
+
+    session = _FakeSession()
+    ctx = _ctx(session)
+    captured = {}
+
+    async def _fake_search(self, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    with patch.object(SearchService, "search", _fake_search):
+        result = asyncio.run(
+            dispatch_tool(ctx, "search_interactions", {"query": "acme pricing"})
+        )
+
+    assert "error" not in result
+    assert captured["db"] is ctx.db
+    assert captured["tenant_id"] == str(ctx.tenant.id)
+    assert captured["query"] == "acme pricing"
+
+    # Binds cleanly against SearchService.search's real signature — fails if
+    # the executor and the service signature drift apart again.
+    sig = inspect.signature(SearchService.search)
+    sig.bind(self=SearchService(), **captured)
+
+
 # ── Tool dispatch: draft tools create proposals, do not mutate ────────────
 
 

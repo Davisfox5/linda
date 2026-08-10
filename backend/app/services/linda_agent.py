@@ -346,6 +346,7 @@ async def _exec_search_interactions(ctx: AgentContext, args: Dict[str, Any]) -> 
     svc = SearchService()
     try:
         results = await svc.search(
+            db=ctx.db,
             tenant_id=str(ctx.tenant.id),
             query=args["query"],
             channel=args.get("channel"),
