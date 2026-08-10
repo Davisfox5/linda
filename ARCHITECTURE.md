@@ -93,7 +93,11 @@ A single FastAPI application plus a Celery worker/beat, sharing the same code an
 > /outreach/campaigns); sending driven by the `outreach_scheduler_tick` beat task
 > (10 min) under per-campaign daily limits + a tenant-wide cap (config.py
 > `OUTREACH_*`). Webhook events: `outreach.email.*`, `prospect.status_changed`,
-> `campaign.completed` — see docs/webhooks.md.
+> `campaign.completed` — see docs/webhooks.md. Campaign analytics (rollup, member
+> funnel, quota) live in `services/campaign_stats.py`, shared by the REST routers,
+> the Ask LINDA chat tools (`list_campaigns` / `get_campaign_stats` /
+> `list_campaign_replies` in `services/linda_agent.py`), and — as sync twins — the
+> hourly campaign-health monitor (`services/campaign_monitor.py`, see §2.2).
 
 > **Action model: the DAG is canonical (4b cutover, 2026-07).** The analysis pipeline writes
 > only `ActionPlan` → `ActionStep` (`action_plans` / `action_steps`, plus `StepArtifact` /
@@ -117,11 +121,16 @@ transaction that marks the step succeeded ("persist-after-pay"). An hourly
 `reconcile_orphan_interactions` beat task re-runs failed entity resolutions. Design and
 rationale: [docs/complexity/01-pipeline-exactly-once.md](docs/complexity/01-pipeline-exactly-once.md).
 
-`beat_schedule` (in `tasks.py`) drives ~30 recurring jobs — e.g. weekly tenant insights,
+`beat_schedule` (in `tasks.py`) drives ~40 recurring jobs — e.g. weekly tenant insights,
 daily/weekly orchestration, outcomes backfill, calibration / IRT / churn-model fits, audio
 & event retention sweeps, email-ingest polling, feedback-stream consumption, CRM sync,
-WER computation, and A/B variant winner selection. **The dict is the source of truth for
-what runs and when.**
+WER computation, A/B variant winner selection, and the hourly campaign-health monitor
+(`campaign_monitor_scan_all_tenants` → `services/campaign_monitor.py`: five deterministic
+detectors over active campaigns — bounce/opt-out spikes, no engagement, stalled outreach,
+quota starvation — plus a one-shot completion wrap-up written to
+`Campaign.insights['completion_report']`; fires fingerprint-deduped `ManagerAlert` rows
+with Haiku-rendered suggestions through the manager-alert fanout). **The dict is the
+source of truth for what runs and when.**
 
 ## 3. Frontend
 

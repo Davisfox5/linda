@@ -48,7 +48,6 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant, require_scope
-from backend.app.config import get_settings
 from backend.app.db import get_db
 from backend.app.models import (
     Campaign,
@@ -57,11 +56,11 @@ from backend.app.models import (
     Contact,
     Customer,
     CustomerNote,
-    EmailSend,
     Interaction,
     OutreachMember,
     Tenant,
 )
+from backend.app.services import campaign_stats
 from backend.app.services.email.outbound import resolve_email_integration
 from backend.app.services.outreach.common import (
     PIPELINE_STATUSES,
@@ -431,52 +430,9 @@ def _check_upload_keys(config: dict, tenant_id: uuid.UUID) -> None:
             )
 
 
-async def _member_states(db: AsyncSession, campaign_id: uuid.UUID) -> Dict[str, int]:
-    rows = (
-        await db.execute(
-            select(OutreachMember.state, func.count(OutreachMember.id))
-            .where(OutreachMember.campaign_id == campaign_id)
-            .group_by(OutreachMember.state)
-        )
-    ).all()
-    return {state: int(count) for state, count in rows}
-
-
-async def _quota_state(
-    db: AsyncSession, tenant_id: uuid.UUID, campaign: Campaign
-) -> Optional[Dict[str, int]]:
-    """Today's throttle counters (in the campaign's send-window tz)."""
-    try:
-        config = parse_config(campaign.config)
-    except ValidationError:
-        return None
-    from backend.app.services.outreach.common import local_day_bounds_utc
-
-    settings = get_settings()
-    day_start, day_end = local_day_bounds_utc(config.send_window)
-
-    async def _count(campaign_scoped: bool) -> int:
-        stmt = select(func.count(EmailSend.id)).where(
-            EmailSend.tenant_id == tenant_id,
-            EmailSend.status == "sent",
-            EmailSend.campaign_id.is_not(None),
-            EmailSend.created_at >= day_start,
-            EmailSend.created_at < day_end,
-        )
-        if campaign_scoped:
-            stmt = stmt.where(EmailSend.campaign_id == campaign.id)
-        return int((await db.execute(stmt)).scalar_one() or 0)
-
-    daily_limit = config.daily_limit or settings.OUTREACH_DEFAULT_DAILY_LIMIT
-    sent_today = await _count(True)
-    tenant_sent_today = await _count(False)
-    return {
-        "daily_limit": daily_limit,
-        "sent_today": sent_today,
-        "remaining_today": max(0, daily_limit - sent_today),
-        "tenant_daily_cap": settings.OUTREACH_TENANT_DAILY_SEND_CAP,
-        "tenant_sent_today": tenant_sent_today,
-    }
+# _member_states / _quota_state moved to
+# backend/app/services/campaign_stats.py (member_states / quota_state) so
+# the chat tools share the same definitions — see _campaign_out below.
 
 
 async def _campaign_out(
@@ -495,8 +451,8 @@ async def _campaign_out(
         started_at=campaign.started_at,
         ended_at=campaign.ended_at,
         created_at=campaign.created_at,
-        member_states=await _member_states(db, campaign.id),
-        quota=await _quota_state(db, tenant.id, campaign),
+        member_states=await campaign_stats.member_states(db, campaign.id),
+        quota=await campaign_stats.quota_state(db, tenant.id, campaign),
         skipped=skipped or [],
     )
 

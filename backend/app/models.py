@@ -3237,9 +3237,9 @@ class ManagerAlert(Base):
     manager_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )
-    # Sales: topic_spike | sentiment_drop | churn_surge | methodology_drop
-    # CS:    renewal_risk_spike | health_score_drop
-    # Support: csat_drop_support | escalation_surge | ttr_drift
+    # Full vocabulary in ``MANAGER_ALERT_KINDS`` below — the DB CHECK
+    # (``ck_manager_alerts_kind``, migration ``cmp_001``) mirrors that
+    # tuple; adding a kind here REQUIRES a migration recreating it.
     kind: Mapped[str] = mapped_column(String(48), nullable=False)
     # high | medium | low
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -3264,6 +3264,45 @@ class ManagerAlert(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+# Every kind any writer may stamp on a ManagerAlert. The DB CHECK
+# constraint (``ck_manager_alerts_kind``, recreated by migration
+# ``cmp_001``) is generated from this tuple, and
+# tests/test_manager_alert_kinds.py fails the build when a writer's kind
+# escapes it or the migration's copy drifts. Same failure class as the
+# 2026-07 recommendation-category drift (see MANAGER_RECOMMENDATION_
+# CATEGORIES below): the original constraint shipped with only the four
+# sales kinds while six services grew ten more, so those INSERTs die
+# with CheckViolation wherever the original CHECK is still live.
+# Adding a kind here REQUIRES a migration recreating the constraint.
+MANAGER_ALERT_KINDS = (
+    # sales anomaly scan (aa01b2c3d4e5 originals)
+    "topic_spike",
+    "sentiment_drop",
+    "churn_surge",
+    "methodology_drop",
+    # customer-success anomaly scan
+    "renewal_risk_spike",
+    "health_score_drop",
+    # support anomaly scan
+    "csat_drop_support",
+    "escalation_surge",
+    "ttr_drift",
+    # trend / commitment / concern detectors
+    "recurring_issue_detected",
+    "broken_commitment_detected",
+    "sales_trend_detected",
+    "cs_trend_detected",
+    "customer_concern_trend_detected",
+    # campaign monitor (campaign_monitor.py)
+    "campaign_bounce_spike",
+    "campaign_optout_spike",
+    "campaign_no_engagement",
+    "campaign_stalled",
+    "campaign_quota_starved",
+    "campaign_completed_summary",
+)
 
 
 # Every category any writer may stamp on a ManagerRecommendation —

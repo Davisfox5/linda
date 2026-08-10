@@ -206,6 +206,9 @@ celery_app.conf.update(
         # not a giant nightly sweep either. Default queue keeps it off
         # the priority lane while still draining quickly.
         "embed_support_case_subject": {"queue": "default"},
+        # Deterministic per-campaign SQL detectors + one Haiku render per
+        # new alert — batch lane like the other manager-view sweeps.
+        "campaign_monitor_scan_all_tenants": {"queue": "batch"},
     },
     beat_schedule={
         # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
@@ -444,6 +447,19 @@ celery_app.conf.update(
         "manager-anomaly-resolve": {
             "task": "manager_anomaly_resolve",
             "schedule": crontab(minute=0, hour="*/6"),
+        },
+        # Campaign health scan: bounce/opt-out/no-engagement/stalled/
+        # quota-starved detectors + completion wrap-up reports. Hourly,
+        # offset from the :15/:25/:30 herd. Outreach sends are
+        # day-granular (send windows + daily throttles, tasks.py:312-314),
+        # so 15-minute scanning like the anomaly scan buys nothing but
+        # noise; daily would be too slow to catch a bounce spike mid
+        # send-window. Fingerprint dedup keeps hourly's marginal cost to
+        # a handful of aggregate queries per active campaign. Same "dial
+        # it after two weeks of real traffic" note as the anomaly scan.
+        "campaign-monitor-scan": {
+            "task": "campaign_monitor_scan_all_tenants",
+            "schedule": crontab(minute=40),
         },
         # Nightly: customer concerns not mentioned in 90 days go dormant
         # so stale worries stop flooding briefs and token budgets.
@@ -5859,6 +5875,61 @@ def manager_anomaly_resolve() -> Dict[str, Any]:
     try:
         resolved = resolve_stale(session)
         return {"resolved": resolved}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="campaign_monitor_scan_all_tenants")
+def campaign_monitor_scan_all_tenants() -> Dict[str, Any]:
+    """Run the campaign-health detectors + completion wrap-up for every
+    tenant. Fans out alert delivery (in-app + Slack) inline, reusing the
+    exact reload idiom ``manager_anomaly_scan_all_tenants`` uses. See
+    ``backend.app.services.campaign_monitor``.
+    """
+    from backend.app.services.campaign_monitor import CAMPAIGN_ALERT_KINDS, scan_all_tenants
+    from backend.app.services.manager_alert_fanout import fanout
+
+    session = _get_sync_session()
+    try:
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        # Cutoff is taken BEFORE the scan: the scan makes one Haiku call
+        # per new alert and can easily run past 60s, and an alert older
+        # than a post-scan cutoff would never be delivered (its
+        # fingerprint stays active, so it can't re-fire). 60s of slack
+        # covers clock skew between this host and the DB's created_at.
+        cutoff = _dt.now(_tz.utc) - _td(seconds=60)
+        result = scan_all_tenants(session)
+        # Fanout: pull the freshly inserted alerts and deliver. The
+        # monitor already commits per tenant; the kind filter keeps this
+        # from re-delivering alerts a concurrently running anomaly scan
+        # inserted (that task does its own fanout).
+        from sqlalchemy import select as _select
+
+        from backend.app.models import ManagerAlert
+
+        # Per tenant under its RLS context — an unscoped scan would see
+        # zero rows now that the policies are live.
+        from backend.app.models import Tenant
+        from backend.app.tenant_ctx import tenant_context
+
+        for tenant in session.query(Tenant).all():
+            with tenant_context(tenant.id, session):
+                fresh = (
+                    session.execute(
+                        _select(ManagerAlert).where(
+                            ManagerAlert.created_at >= cutoff,
+                            ManagerAlert.tenant_id == tenant.id,
+                            ManagerAlert.kind.in_(CAMPAIGN_ALERT_KINDS),
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if fresh:
+                    fanout(session, fresh)
+                    session.commit()
+        return result
     finally:
         session.close()
 

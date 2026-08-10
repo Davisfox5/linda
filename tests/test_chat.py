@@ -144,6 +144,10 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
         "get_interaction_detail",
         # Live read of the user's connected Gmail SENT folder (search_sent_email).
         "search_sent_email",
+        # Campaign visibility (Phase 1 of docs/plans/campaign-monitoring.md).
+        "list_campaigns",
+        "get_campaign_stats",
+        "list_campaign_replies",
     }
     assert DRAFT_TOOLS == {
         "propose_action_item",
@@ -238,6 +242,47 @@ def test_search_sent_email_not_connected_passes_through():
     assert result["connected"] is False
 
 
+# ── search_interactions (regression: missing `db=` kwarg) ──────────────────
+#
+# Regression: commit 90ecf8d dropped the `db=ctx.db` kwarg from
+# _exec_search_interactions' call into SearchService.search, whose first
+# parameter is `db: AsyncSession`. Every search_interactions call then raised
+# TypeError: SearchService.search() missing 1 required positional argument:
+# 'db', swallowed by the executor's except block as {"error": "search
+# failed: ..."}. Guard the argument itself, and bind the captured call
+# kwargs against the live signature so a future rename/reorder is caught too.
+
+
+def test_search_interactions_passes_db_session_to_search_service():
+    import inspect
+
+    from backend.app.services.linda_agent import dispatch_tool
+    from backend.app.services.search_service import SearchService
+
+    session = _FakeSession()
+    ctx = _ctx(session)
+    captured = {}
+
+    async def _fake_search(self, **kwargs):
+        captured.update(kwargs)
+        return []
+
+    with patch.object(SearchService, "search", _fake_search):
+        result = asyncio.run(
+            dispatch_tool(ctx, "search_interactions", {"query": "acme pricing"})
+        )
+
+    assert "error" not in result
+    assert captured["db"] is ctx.db
+    assert captured["tenant_id"] == str(ctx.tenant.id)
+    assert captured["query"] == "acme pricing"
+
+    # Binds cleanly against SearchService.search's real signature — fails if
+    # the executor and the service signature drift apart again.
+    sig = inspect.signature(SearchService.search)
+    sig.bind(self=SearchService(), **captured)
+
+
 # ── Tool dispatch: draft tools create proposals, do not mutate ────────────
 
 
@@ -276,6 +321,185 @@ def test_unknown_tool_returns_error():
 
     result = asyncio.run(dispatch_tool(_ctx(_FakeSession()), "bogus_tool", {}))
     assert "error" in result
+
+
+# ── Campaign chat tools (Phase 1: docs/plans/campaign-monitoring.md) ───────
+#
+# list_campaigns / get_campaign_stats / list_campaign_replies delegate to
+# backend/app/services/campaign_stats.py, whose queries (subqueries, JSONB
+# comparators) aren't practical to script against _FakeSession — these run
+# against the real SQLite fixtures, mirroring test_get_or_create_conversation
+# below. Invalid-UUID cases short-circuit before touching the DB, so those
+# stay on the lightweight _FakeSession like the rest of this file.
+
+
+def test_get_campaign_stats_invalid_uuid_returns_error_not_exception():
+    from backend.app.services.linda_agent import dispatch_tool
+
+    result = asyncio.run(
+        dispatch_tool(_ctx(_FakeSession()), "get_campaign_stats", {"campaign_id": "not-a-uuid"})
+    )
+    assert result == {"error": "invalid campaign_id"}
+
+
+def test_list_campaign_replies_invalid_uuid_returns_error_not_exception():
+    from backend.app.services.linda_agent import dispatch_tool
+
+    result = asyncio.run(
+        dispatch_tool(_ctx(_FakeSession()), "list_campaign_replies", {"campaign_id": "not-a-uuid"})
+    )
+    assert result == {"error": "invalid campaign_id"}
+
+
+def test_get_campaign_stats_missing_campaign_id_returns_error_not_exception():
+    from backend.app.services.linda_agent import dispatch_tool
+
+    result = asyncio.run(dispatch_tool(_ctx(_FakeSession()), "get_campaign_stats", {}))
+    assert "error" in result
+
+
+@pytest.mark.asyncio
+async def test_dispatch_list_campaigns_returns_both_kinds_most_recent_first(
+    test_session, test_tenant
+):
+    from backend.app.models import Campaign
+    from backend.app.services.linda_agent import dispatch_tool
+
+    older = Campaign(
+        tenant_id=test_tenant.id, name="Older ESP blast", channel="email", kind="external",
+        started_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+    newer = Campaign(
+        tenant_id=test_tenant.id, name="Newer outreach", channel="email", kind="outreach",
+        started_at=datetime(2026, 6, 1, tzinfo=timezone.utc), sent_count=12,
+    )
+    test_session.add_all([older, newer])
+    await test_session.commit()
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    result = await dispatch_tool(ctx, "list_campaigns", {})
+
+    names = [c["name"] for c in result["campaigns"]]
+    assert names == ["Newer outreach", "Older ESP blast"]
+    assert result["campaigns"][0]["kind"] == "outreach"
+    assert result["campaigns"][0]["sent_count"] == 12
+    assert result["campaigns"][0]["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_get_campaign_stats_returns_overview_with_kind(test_session, test_tenant):
+    from backend.app.models import Campaign
+    from backend.app.services.linda_agent import dispatch_tool
+
+    campaign = Campaign(tenant_id=test_tenant.id, name="Ext blast", channel="email", kind="external")
+    test_session.add(campaign)
+    await test_session.commit()
+    await test_session.refresh(campaign)
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    result = await dispatch_tool(ctx, "get_campaign_stats", {"campaign_id": str(campaign.id)})
+
+    assert "error" not in result
+    assert result["campaign"]["kind"] == "external"
+    assert result["campaign"]["rollup"]["sent"] == 0
+    # External campaigns have no member funnel or quota.
+    assert "member_states" not in result["campaign"]
+    assert "quota" not in result["campaign"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_get_campaign_stats_cross_tenant_returns_not_found(
+    test_session_factory, test_tenant
+):
+    from backend.app.models import Campaign, Tenant
+    from backend.app.services.linda_agent import dispatch_tool
+
+    async with test_session_factory() as seed:
+        other_tenant = Tenant(name="Other Co", slug=f"other-{uuid.uuid4().hex[:8]}")
+        seed.add(other_tenant)
+        await seed.commit()
+        await seed.refresh(other_tenant)
+
+        their_campaign = Campaign(
+            tenant_id=other_tenant.id, name="Their campaign", channel="email",
+        )
+        seed.add(their_campaign)
+        await seed.commit()
+        await seed.refresh(their_campaign)
+        their_campaign_id = their_campaign.id
+
+    async with test_session_factory() as session:
+        ctx = _ctx(session, tenant=test_tenant)  # our tenant, not other_tenant
+        result = await dispatch_tool(
+            ctx, "get_campaign_stats", {"campaign_id": str(their_campaign_id)}
+        )
+
+    assert result == {"error": "campaign not found"}
+
+
+@pytest.mark.asyncio
+async def test_dispatch_list_campaign_replies_reports_attributed_and_raw_counts(
+    test_session, test_tenant
+):
+    from backend.app.models import Campaign, CampaignEvent, CampaignRecipient, Interaction
+    from backend.app.services.linda_agent import dispatch_tool
+
+    campaign = Campaign(tenant_id=test_tenant.id, name="Ext blast", channel="email", kind="external")
+    test_session.add(campaign)
+    await test_session.commit()
+    await test_session.refresh(campaign)
+
+    recipient = CampaignRecipient(
+        campaign_id=campaign.id, tenant_id=test_tenant.id, email_address="a@x.com"
+    )
+    test_session.add(recipient)
+    await test_session.commit()
+    await test_session.refresh(recipient)
+
+    test_session.add(CampaignEvent(
+        campaign_id=campaign.id, tenant_id=test_tenant.id, recipient_id=recipient.id,
+        event_type="reply",
+    ))
+    test_session.add(Interaction(
+        tenant_id=test_tenant.id, campaign_id=campaign.id, channel="email",
+        direction="inbound", subject="Re: hi", insights={"sentiment_score": 0.2},
+    ))
+    await test_session.commit()
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    result = await dispatch_tool(ctx, "list_campaign_replies", {"campaign_id": str(campaign.id)})
+
+    assert result["reply_events"] == 1
+    assert len(result["attributed_replies"]) == 1
+    assert result["attributed_replies"][0]["subject"] == "Re: hi"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_list_campaign_replies_cross_tenant_returns_not_found(
+    test_session_factory, test_tenant
+):
+    from backend.app.models import Campaign, Tenant
+    from backend.app.services.linda_agent import dispatch_tool
+
+    async with test_session_factory() as seed:
+        other_tenant = Tenant(name="Other Co", slug=f"other-{uuid.uuid4().hex[:8]}")
+        seed.add(other_tenant)
+        await seed.commit()
+        await seed.refresh(other_tenant)
+
+        their_campaign = Campaign(tenant_id=other_tenant.id, name="Theirs", channel="email")
+        seed.add(their_campaign)
+        await seed.commit()
+        await seed.refresh(their_campaign)
+        their_campaign_id = their_campaign.id
+
+    async with test_session_factory() as session:
+        ctx = _ctx(session, tenant=test_tenant)
+        result = await dispatch_tool(
+            ctx, "list_campaign_replies", {"campaign_id": str(their_campaign_id)}
+        )
+
+    assert result == {"error": "campaign not found"}
 
 
 # ── History rehydration: tool_use turns must replay with their tool_result ──

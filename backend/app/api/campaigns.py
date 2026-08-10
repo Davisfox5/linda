@@ -20,7 +20,7 @@ from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field, field_validator
-from sqlalchemy import func, or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.auth import get_current_tenant
@@ -30,9 +30,9 @@ from backend.app.models import (
     CampaignEvent,
     CampaignRecipient,
     Contact,
-    Interaction,
     Tenant,
 )
+from backend.app.services import campaign_stats
 
 router = APIRouter()
 
@@ -184,7 +184,7 @@ async def get_campaign(
     tenant: Tenant = Depends(get_current_tenant),
 ):
     campaign = await _get_campaign_or_404(db, tenant, campaign_id)
-    rollup = await _compute_rollup(db, tenant, campaign_id)
+    rollup = CampaignRollup(**await campaign_stats.compute_rollup(db, tenant, campaign_id))
     return CampaignDetail(
         **CampaignOut.model_validate(campaign).model_dump(),
         rollup=rollup,
@@ -279,69 +279,6 @@ async def _get_campaign_or_404(
     return campaign
 
 
-async def _compute_rollup(
-    db: AsyncSession, tenant: Tenant, campaign_id: uuid.UUID
-) -> CampaignRollup:
-    counts_rows = (await db.execute(
-        select(CampaignEvent.event_type, func.count(CampaignEvent.id))
-        .where(CampaignEvent.campaign_id == campaign_id)
-        .group_by(CampaignEvent.event_type)
-    )).all()
-    by_type = {row[0]: row[1] for row in counts_rows}
-
-    # Human clicks: collapse repeats to one per (recipient, url) and skip
-    # hits the click endpoint flagged as likely scanner prefetches. Events
-    # ingested without click-tracking metadata (external ESPs) count too —
-    # their suspected_bot is absent, i.e. not flagged.
-    click_url = CampaignEvent.metadata_["url"].as_string()
-    suspected_bot = CampaignEvent.metadata_["suspected_bot"].as_boolean()
-    human_clicks_sq = (
-        select(CampaignEvent.recipient_id, click_url.label("url"))
-        .where(
-            CampaignEvent.campaign_id == campaign_id,
-            CampaignEvent.event_type == "click",
-            or_(suspected_bot.is_(None), suspected_bot.is_(False)),
-        )
-        .group_by(CampaignEvent.recipient_id, click_url)
-        .subquery()
-    )
-    unique_clicks = (
-        await db.execute(select(func.count()).select_from(human_clicks_sq))
-    ).scalar_one() or 0
-
-    sent = (await db.execute(
-        select(func.count(CampaignRecipient.id))
-        .where(CampaignRecipient.campaign_id == campaign_id)
-    )).scalar_one() or 0
-
-    # Average sentiment across attributed inbound interactions.
-    reply_scores = (await db.execute(
-        select(Interaction.insights)
-        .where(
-            Interaction.tenant_id == tenant.id,
-            Interaction.campaign_id == campaign_id,
-            Interaction.direction == "inbound",
-        )
-    )).scalars().all()
-    raw_scores: List[float] = []
-    for payload in reply_scores:
-        if not payload:
-            continue
-        s = payload.get("sentiment_score")
-        try:
-            raw_scores.append(float(s))
-        except (TypeError, ValueError):
-            continue
-    avg = sum(raw_scores) / len(raw_scores) if raw_scores else None
-
-    return CampaignRollup(
-        sent=sent,
-        opens=by_type.get("open", 0),
-        clicks=by_type.get("click", 0),
-        unique_clicks=unique_clicks,
-        replies=by_type.get("reply", 0),
-        bounces=by_type.get("bounce", 0),
-        unsubscribes=by_type.get("unsubscribe", 0),
-        conversions=by_type.get("convert", 0),
-        reply_sentiment_avg=avg,
-    )
+# _compute_rollup moved to backend/app/services/campaign_stats.py
+# (campaign_stats.compute_rollup) so the chat tools share the same
+# definitions. This router builds CampaignRollup from that dict.
