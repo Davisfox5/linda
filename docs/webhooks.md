@@ -211,3 +211,10 @@ every other kind.
   "campaign_name": "July gyms sweep, or null"
 }
 ```
+
+Delivery notes: this event is not gated by `AlertChannelConfig` — a
+tenant that muted in-app/Slack alert channels still receives it, since
+webhook registration is itself opt-in. Deliveries are at-least-once
+(retries, and rare fanout overlaps, can re-send the same alert under a
+new `X-Linda-Delivery` id), so consumers should dedupe on
+`data.alert_id`.

@@ -152,19 +152,19 @@ def _deliver_webhook(session: Session, tenant_id, alert: ManagerAlert) -> None:
     campaign-monitor detector stamped them there; absent for every other
     alert kind.
     """
-    evidence = alert.evidence or {}
-    payload = {
-        "alert_id": str(alert.id),
-        "kind": alert.kind,
-        "severity": alert.severity,
-        "domain": alert.domain,
-        "title": alert.title,
-        "body": alert.body,
-        "opened_at": alert.opened_at.isoformat() if alert.opened_at else None,
-        "campaign_id": evidence.get("campaign_id"),
-        "campaign_name": evidence.get("campaign_name"),
-    }
     try:
+        evidence = alert.evidence if isinstance(alert.evidence, dict) else {}
+        payload = {
+            "alert_id": str(alert.id),
+            "kind": alert.kind,
+            "severity": alert.severity,
+            "domain": alert.domain,
+            "title": alert.title,
+            "body": alert.body,
+            "opened_at": alert.opened_at.isoformat() if alert.opened_at else None,
+            "campaign_id": evidence.get("campaign_id"),
+            "campaign_name": evidence.get("campaign_name"),
+        }
         dispatch_sync(session, tenant_id, "manager_alert.created", payload)
     except Exception:
         logger.warning("manager_alert.created webhook enqueue failed", exc_info=True)
