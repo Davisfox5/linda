@@ -180,6 +180,21 @@ class _StubRouter:
         return _StubLLMResponse(self._result)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_llm(monkeypatch):
+    """No test may hit the real router: default every test to a raising
+    stub (exercising the deterministic template fallback deliberately).
+    Tests about rendering override ``get_router`` themselves — their
+    later monkeypatch.setattr wins."""
+    from backend.app.services import campaign_monitor
+
+    monkeypatch.setattr(
+        campaign_monitor,
+        "get_router",
+        lambda: _StubRouter(exc=RuntimeError("live LLM calls are disabled in tests")),
+    )
+
+
 def _frozen_datetime(fixed):
     """A ``datetime`` subclass whose ``.now()`` always returns ``fixed``,
     for monkeypatching ``campaign_monitor.datetime`` in tests that need a
@@ -570,6 +585,71 @@ def test_condition_cleared_resolves_alert_and_refire_allowed(sync_session):
         sync_session.query(ManagerAlert).filter(ManagerAlert.kind == "campaign_bounce_spike").all()
     )
     assert len(all_bounce_alerts) == 2
+
+
+# ── External-campaign recency gate ────────────────────────────────────
+#
+# External campaigns never leave status='active' (models.py:2446), so
+# without the recency gate the first production scan would alert on
+# every historical external campaign ever ingested — and those alerts
+# could never auto-resolve.
+
+
+def test_stale_external_campaign_is_not_scanned(sync_session):
+    from backend.app.services import campaign_monitor
+
+    tenant = _make_tenant(sync_session)
+    now = datetime.now(timezone.utc)
+    stale = _make_campaign(
+        sync_session, tenant, started_at=now - timedelta(days=90)
+    )
+    _add_recipients(sync_session, stale, tenant, 25)
+    _add_events(sync_session, stale, tenant, "bounce", 5)  # 20% — would fire
+
+    inserted = campaign_monitor.scan_tenant(sync_session, tenant)
+    assert inserted == []
+
+
+def test_recent_external_campaign_still_scanned(sync_session):
+    from backend.app.services import campaign_monitor
+
+    tenant = _make_tenant(sync_session)
+    now = datetime.now(timezone.utc)
+    fresh = _make_campaign(
+        sync_session, tenant, started_at=now - timedelta(days=3)
+    )
+    _add_recipients(sync_session, fresh, tenant, 25)
+    _add_events(sync_session, fresh, tenant, "bounce", 5)
+
+    inserted = campaign_monitor.scan_tenant(sync_session, tenant)
+    assert [a.kind for a in inserted] == ["campaign_bounce_spike"]
+
+
+def test_external_alert_resolves_when_campaign_ages_out(sync_session):
+    """When an external campaign ages out of the window — even if it was
+    the tenant's ONLY candidate (fast-skip path) — its open alerts must
+    resolve rather than stay open forever."""
+    from backend.app.services import campaign_monitor
+
+    tenant = _make_tenant(sync_session)
+    now = datetime.now(timezone.utc)
+    campaign = _make_campaign(
+        sync_session, tenant, started_at=now - timedelta(days=3)
+    )
+    _add_recipients(sync_session, campaign, tenant, 25)
+    _add_events(sync_session, campaign, tenant, "bounce", 5)
+
+    inserted = campaign_monitor.scan_tenant(sync_session, tenant)
+    alert = [a for a in inserted if a.kind == "campaign_bounce_spike"][0]
+
+    campaign.started_at = now - timedelta(days=90)
+    sync_session.commit()
+
+    # The tenant now has zero candidate campaigns, so this exercises the
+    # fast-skip branch's resolve pass.
+    assert campaign_monitor.scan_tenant(sync_session, tenant) == []
+    sync_session.refresh(alert)
+    assert alert.resolved_at is not None
 
 
 # ── Completion wrap-up report ─────────────────────────────────────────

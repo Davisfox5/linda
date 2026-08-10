@@ -221,8 +221,16 @@ TOOLS: List[Dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "description": "Optional filter: 'external' or 'outreach'."},
-                "status": {"type": "string", "description": "Optional filter: draft, active, paused, completed, archived."},
+                "kind": {
+                    "type": "string",
+                    "enum": ["external", "outreach"],
+                    "description": "Optional filter by campaign kind.",
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["draft", "active", "paused", "completed", "archived"],
+                    "description": "Optional filter by status. Omit to list all.",
+                },
                 "limit": {"type": "integer", "description": "Max results (default 10)."},
             },
         },
@@ -516,10 +524,7 @@ async def _exec_get_interaction_detail(ctx: AgentContext, args: Dict[str, Any]) 
 
 
 async def _exec_list_campaigns(ctx: AgentContext, args: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        limit = int(args.get("limit", 10))
-    except (TypeError, ValueError):
-        limit = 10
+    limit = _clamped_limit(args, default=10)
     rows = await campaign_stats.list_campaigns(
         ctx.db,
         ctx.tenant,
@@ -570,15 +575,20 @@ async def _exec_list_campaign_replies(ctx: AgentContext, args: Dict[str, Any]) -
     if exists is None:
         return {"error": "campaign not found"}
 
-    try:
-        limit = int(args.get("limit", 10))
-    except (TypeError, ValueError):
-        limit = 10
-
     replies = await campaign_stats.list_campaign_replies(
-        ctx.db, ctx.tenant, campaign_uuid, limit=limit
+        ctx.db, ctx.tenant, campaign_uuid, limit=_clamped_limit(args, default=10)
     )
     return replies
+
+
+def _clamped_limit(args: Dict[str, Any], default: int, lo: int = 1, hi: int = 50) -> int:
+    """Model-supplied limits are clamped so a stray ``limit: 500`` can't
+    bloat the context window (the snippet cap only bounds one field)."""
+    try:
+        limit = int(args.get("limit", default))
+    except (TypeError, ValueError):
+        limit = default
+    return max(lo, min(hi, limit))
 
 
 def _fetch_sent_gmail_sync(

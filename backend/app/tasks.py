@@ -5886,22 +5886,28 @@ def campaign_monitor_scan_all_tenants() -> Dict[str, Any]:
     exact reload idiom ``manager_anomaly_scan_all_tenants`` uses. See
     ``backend.app.services.campaign_monitor``.
     """
-    from backend.app.services.campaign_monitor import scan_all_tenants
+    from backend.app.services.campaign_monitor import CAMPAIGN_ALERT_KINDS, scan_all_tenants
     from backend.app.services.manager_alert_fanout import fanout
 
     session = _get_sync_session()
     try:
-        result = scan_all_tenants(session)
-        # Fanout: pull the freshly inserted alerts and deliver. The
-        # monitor already commits per tenant; here we re-load only those
-        # created in the last 60 seconds to avoid double-delivery.
         from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
+        # Cutoff is taken BEFORE the scan: the scan makes one Haiku call
+        # per new alert and can easily run past 60s, and an alert older
+        # than a post-scan cutoff would never be delivered (its
+        # fingerprint stays active, so it can't re-fire). 60s of slack
+        # covers clock skew between this host and the DB's created_at.
+        cutoff = _dt.now(_tz.utc) - _td(seconds=60)
+        result = scan_all_tenants(session)
+        # Fanout: pull the freshly inserted alerts and deliver. The
+        # monitor already commits per tenant; the kind filter keeps this
+        # from re-delivering alerts a concurrently running anomaly scan
+        # inserted (that task does its own fanout).
         from sqlalchemy import select as _select
 
         from backend.app.models import ManagerAlert
 
-        cutoff = _dt.now(_tz.utc) - _td(seconds=60)
         # Per tenant under its RLS context — an unscoped scan would see
         # zero rows now that the policies are live.
         from backend.app.models import Tenant
@@ -5914,6 +5920,7 @@ def campaign_monitor_scan_all_tenants() -> Dict[str, Any]:
                         _select(ManagerAlert).where(
                             ManagerAlert.created_at >= cutoff,
                             ManagerAlert.tenant_id == tenant.id,
+                            ManagerAlert.kind.in_(CAMPAIGN_ALERT_KINDS),
                         )
                     )
                     .scalars()

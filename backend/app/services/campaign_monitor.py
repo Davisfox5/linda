@@ -49,7 +49,6 @@ from backend.app.models import (
     OutreachMember,
     Tenant,
 )
-from backend.app.services import model_catalog
 from backend.app.services.model_router import (
     CacheableBlock,
     LLMRequest,
@@ -61,9 +60,6 @@ from backend.app.services.outreach.common import local_day_bounds_utc, parse_con
 from backend.app.services.plain_english import sanitize_manager_text
 
 logger = logging.getLogger(__name__)
-
-
-HAIKU_MODEL = model_catalog.HAIKU
 
 
 # ── Alert kind vocabulary ────────────────────────────────────────────────
@@ -106,6 +102,17 @@ QUOTA_STARVED_MIN_WINDOW_AGE_HOURS = 1
 # the plan's literal SQL: ``status='active' OR ended_at > now()-interval
 # '2 days'``.
 ACTIVE_OR_RECENT_LOOKBACK_DAYS = 2
+
+# External-kind campaigns never leave status='active' (models.py:2446),
+# so without a recency gate the scan would evaluate — and on the first
+# run alert on — every external campaign ever ingested, forever, and
+# those alerts could never auto-resolve. An external campaign is a
+# candidate only while it started recently or is still receiving
+# recent activity (``ended_at`` inside the completion lookback); alerts
+# on campaigns that age out of this window are auto-resolved by
+# ``_resolve_cleared``. Outreach campaigns keep the plan's literal
+# status semantics — their scheduler walks them to ``completed``.
+EXTERNAL_ACTIVE_WINDOW_DAYS = 30
 
 # Non-terminal OutreachMember states — a member here is still "in
 # flight" (enrolled, drafted, or mid-sequence) as opposed to a resolved
@@ -207,12 +214,21 @@ def scan_tenant(session: Session, tenant: Tenant) -> List[ManagerAlert]:
     campaign, returns immediately without touching anything else.
     Per-detector and per-campaign failures are non-fatal (logged,
     skipped) so one bad campaign can't blank out the whole tenant's scan.
-    Commits once at the end (or on the fast-skip no-op) so the caller
-    (``scan_all_tenants``) can isolate one tenant's failure from the
-    rest.
+    Commits once at the end; the fast-skip path stays read-only (safe —
+    the ``after_begin`` listener re-arms the tenant GUC on every new
+    transaction) unless it resolved orphaned alerts, in which case it
+    commits that. The single commit lets the caller
+    (``scan_all_tenants``) isolate one tenant's failure from the rest.
     """
     now = datetime.now(timezone.utc)
     if _active_or_recent_count(session, tenant.id, now) == 0:
+        # No candidates — but open campaign alerts may still need
+        # resolving (e.g. an external campaign that just aged out of
+        # EXTERNAL_ACTIVE_WINDOW_DAYS took its alerts out of the
+        # candidate set with it). Cheap: one indexed query when there
+        # are no open campaign alerts.
+        if _resolve_cleared(session, tenant, now):
+            session.commit()
         return []
 
     campaigns = _candidate_campaigns(session, tenant.id, now)
@@ -285,34 +301,48 @@ def _lookback_cutoff(now: datetime) -> datetime:
     return now - timedelta(days=ACTIVE_OR_RECENT_LOOKBACK_DAYS)
 
 
-def _active_or_recent_count(session: Session, tenant_id: Any, now: datetime) -> int:
-    """Cheap pre-check: does this tenant have anything worth scanning?
-    Mirrors the plan's fast-skip SQL literally (active, or ended within
-    the lookback window so a just-completed campaign still gets its
-    wrap-up report). A completed campaign whose ``ended_at`` is NULL and
-    older than the lookback would be missed here — accepted per the
-    plan's literal query, not solved by this module."""
+def _external_cutoff(now: datetime) -> datetime:
+    return now - timedelta(days=EXTERNAL_ACTIVE_WINDOW_DAYS)
+
+
+def _candidate_filter(tenant_id: Any, now: datetime):
+    """Shared WHERE clause for the fast-skip count and candidate select.
+
+    Outreach campaigns follow the plan's literal SQL (``status='active'
+    OR ended_at > lookback``) — their scheduler walks them to
+    ``completed``. External campaigns are permanently 'active'
+    (models.py:2446), so they additionally require recency (started or
+    created inside EXTERNAL_ACTIVE_WINDOW_DAYS, or ended inside the
+    completion lookback) — see the constant's comment. A completed
+    campaign whose ``ended_at`` is NULL and older than the lookback is
+    missed — accepted per the plan's literal query."""
     cutoff = _lookback_cutoff(now)
+    ext_cutoff = _external_cutoff(now)
+    recent = sa.or_(Campaign.status == "active", Campaign.ended_at > cutoff)
+    return sa.and_(
+        Campaign.tenant_id == tenant_id,
+        recent,
+        sa.or_(
+            Campaign.kind != "external",
+            func.coalesce(Campaign.started_at, Campaign.created_at) > ext_cutoff,
+            Campaign.ended_at > cutoff,
+        ),
+    )
+
+
+def _active_or_recent_count(session: Session, tenant_id: Any, now: datetime) -> int:
+    """Cheap pre-check: does this tenant have anything worth scanning?"""
     return int(
         session.execute(
-            select(func.count(Campaign.id)).where(
-                Campaign.tenant_id == tenant_id,
-                sa.or_(Campaign.status == "active", Campaign.ended_at > cutoff),
-            )
+            select(func.count(Campaign.id)).where(_candidate_filter(tenant_id, now))
         ).scalar_one()
         or 0
     )
 
 
 def _candidate_campaigns(session: Session, tenant_id: Any, now: datetime) -> List[Campaign]:
-    cutoff = _lookback_cutoff(now)
     return (
-        session.execute(
-            select(Campaign).where(
-                Campaign.tenant_id == tenant_id,
-                sa.or_(Campaign.status == "active", Campaign.ended_at > cutoff),
-            )
-        )
+        session.execute(select(Campaign).where(_candidate_filter(tenant_id, now)))
         .scalars()
         .all()
     )
@@ -844,10 +874,35 @@ def _resolve_cleared(session: Session, tenant: Tenant, now: datetime) -> int:
             alert.resolved_at = now
             resolved += 1
             continue
+        if campaign.kind == "external" and not _external_still_candidate(campaign, now):
+            # External campaigns never reach 'completed' — once one ages
+            # out of EXTERNAL_ACTIVE_WINDOW_DAYS the scan stops
+            # evaluating it, so its alerts must resolve here or they
+            # would stay open forever.
+            alert.resolved_at = now
+            resolved += 1
+            continue
         if not _condition_still_true(session, tenant, campaign, alert, now):
             alert.resolved_at = now
             resolved += 1
     return resolved
+
+
+def _external_still_candidate(campaign: Campaign, now: datetime) -> bool:
+    started = _aware(campaign.started_at or campaign.created_at)
+    if started is not None and started > _external_cutoff(now):
+        return True
+    ended = _aware(campaign.ended_at)
+    return ended is not None and ended > _lookback_cutoff(now)
+
+
+def _aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """SQLite (unit tests) returns naive datetimes for tz-aware columns;
+    Postgres returns aware ones. Same coercion idiom as
+    ``pipeline_ledger``/``outreach/links``."""
+    if dt is not None and dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def _condition_still_true(

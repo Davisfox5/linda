@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import ValidationError
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from backend.app.models import (
     Campaign,
@@ -228,6 +229,10 @@ async def list_campaign_replies(
     rows = (
         await db.execute(
             select(Interaction)
+            # Eager-load: ``interaction.contact`` below would otherwise
+            # lazy-load on an AsyncSession and die with MissingGreenlet
+            # on any identity-map miss.
+            .options(selectinload(Interaction.contact))
             .where(
                 Interaction.tenant_id == tenant.id,
                 Interaction.campaign_id == campaign_id,

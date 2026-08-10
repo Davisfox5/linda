@@ -426,6 +426,42 @@ async def test_list_campaign_replies_returns_attributed_interactions(
     assert len(reply["summary"]) <= 301
 
 
+async def test_list_campaign_replies_loads_contact_without_identity_map(
+    test_session_factory, test_tenant
+):
+    """Regression: ``interaction.contact`` must be eager-loaded. With the
+    Contact absent from the session's identity map (the shape of a real
+    API request), a lazy load on an AsyncSession raises MissingGreenlet —
+    which the chat loop would swallow into a tool-level error, exactly
+    the failure class of the original search_interactions incident."""
+    from backend.app.models import Contact, Interaction
+    from backend.app.services import campaign_stats
+
+    async with test_session_factory() as session:
+        campaign = await _make_campaign(session, test_tenant)
+        contact = Contact(tenant_id=test_tenant.id, name="Jane Prospect", email="jane@x.com")
+        session.add(contact)
+        await session.flush()
+        session.add(Interaction(
+            tenant_id=test_tenant.id,
+            campaign_id=campaign.id,
+            contact_id=contact.id,
+            channel="email",
+            direction="inbound",
+            subject="Re: Quick question",
+            insights={"sentiment_score": 0.5},
+        ))
+        await session.commit()
+        campaign_id = campaign.id
+        # Empty the identity map so the many-to-one can't be satisfied
+        # without IO — forces the eager-load path a fresh request hits.
+        session.expunge_all()
+
+        result = await campaign_stats.list_campaign_replies(session, test_tenant, campaign_id)
+
+    assert result["attributed_replies"][0]["contact"] == "Jane Prospect"
+
+
 async def test_list_campaign_replies_reply_events_only_for_external_campaign(
     test_session_factory, test_tenant
 ):
