@@ -69,6 +69,9 @@ WEBHOOK_EVENTS: Dict[str, str] = {
     "support_case.status_changed":    "A support case transitioned (open / in_progress / resolved / closed / escalated).",
     "support_case.assigned":          "A support case was assigned (or unassigned).",
 
+    # Manager alerts
+    "manager_alert.created": "A manager alert opened (anomaly scan, trend detector, or campaign monitor).",
+
     # System
     "webhook.test":             "Manual test ping from the admin UI.",
 }

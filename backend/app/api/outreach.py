@@ -19,6 +19,7 @@ Campaigns
 - POST  /outreach/campaigns                — create (status=draft) + enroll prospects
 - GET   /outreach/campaigns                — list with member-state rollups
 - GET   /outreach/campaigns/{id}           — detail + quota state
+- GET   /outreach/campaigns/{id}/stats     — header + rollup (+ funnel/quota for outreach kind; also serves external campaigns)
 - PATCH /outreach/campaigns/{id}           — partial update (guidance/template/window/limit/mode)
 - POST  /outreach/campaigns/{id}/members   — enroll more prospects
 - GET   /outreach/campaigns/{id}/members   — members incl. drafts
@@ -1081,6 +1082,25 @@ async def get_outreach_campaign(
 ):
     campaign = await _get_outreach_campaign_or_404(db, tenant, campaign_id)
     return await _campaign_out(db, tenant, campaign)
+
+
+@router.get("/outreach/campaigns/{campaign_id}/stats")
+async def get_campaign_stats(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    tenant: Tenant = Depends(get_current_tenant),
+):
+    """Full analytics for one campaign — header + rollup always, plus the
+    member funnel/quota for outreach-kind campaigns and the completion
+    report when one has been generated. Works for both campaign kinds:
+    unlike ``_get_outreach_campaign_or_404``, ``campaign_overview`` doesn't
+    filter on ``kind`` — external campaigns are stats-only (no send
+    engine touches them) but still fetchable here.
+    """
+    overview = await campaign_stats.campaign_overview(db, tenant, campaign_id)
+    if overview is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return overview
 
 
 @router.patch("/outreach/campaigns/{campaign_id}", response_model=OutreachCampaignOut)
