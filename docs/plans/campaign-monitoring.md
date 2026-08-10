@@ -1,6 +1,6 @@
 # Plan: Campaign visibility in Ask LINDA + proactive campaign monitoring
 
-Status: proposed (fable-tier plan, 2026-08-10)
+Status: Phases 0–2 implemented (2026-08-10, this branch); Phase 3 remains future work
 Owner: planner (fable) → spec-writer (opus) → code-writer (sonnet), with
 fable-tier direct authoring for the one sensitive-path step (see Phase 2, step 2.1).
 
