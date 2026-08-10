@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.models import (
     ActionItem,
+    Campaign,
     LindaChatConversation,
     LindaChatMessage,
     Interaction,
@@ -30,6 +31,7 @@ from backend.app.models import (
     User,
     WriteProposal,
 )
+from backend.app.services import campaign_stats
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.model_router import (
     CacheableBlock,
@@ -92,14 +94,28 @@ PRODUCT_KNOWLEDGE = (
     "You can ALSO read the user's most recent SENT emails live, on demand, "
     "with search_sent_email.\n"
     "- Integrations: Salesforce, HubSpot, Slack, Gmail, Zoom\n"
-    "- Webhooks: outbound events for tenant systems\n\n"
+    "- Webhooks: outbound events for tenant systems\n"
+    "- Campaigns: two kinds — external ESP campaigns tracked for analytics, "
+    "and LINDA-sent cold-outreach campaigns (drafted, throttled, and sent "
+    "by LINDA)\n\n"
     "## Email visibility — important\n"
     "You are NOT limited to call/meeting data. When the user asks about "
     "their sent emails, outbound messages, or whether they emailed someone, "
     "do NOT reply that you lack access — call search_sent_email (live Gmail) "
     "and/or search_interactions with channel='email'. Only tell the user "
     "Gmail is unavailable if a tool result reports the account isn't "
-    "connected (connected=false) or needs re-authorization (auth_error)."
+    "connected (connected=false) or needs re-authorization (auth_error).\n\n"
+    "## Campaign visibility — important\n"
+    "You are NOT limited to call/meeting data here either. Never claim you "
+    "can't see campaigns. When the user asks about 'our latest/most recent "
+    "campaign' without naming one, call list_campaigns FIRST to resolve it "
+    "(it's ordered most-recent-first and covers both kinds). Then drill in "
+    "with get_campaign_stats for funnel/quota/rollup numbers, or "
+    "list_campaign_replies for 'what have the responses been' questions. "
+    "Explain the external-vs-outreach distinction when it's relevant to the "
+    "answer (e.g. outreach campaigns have a member funnel and daily send "
+    "quota; external ones don't). Only tell the user there are no campaigns "
+    "after list_campaigns actually returns an empty list."
 )
 
 
@@ -189,6 +205,65 @@ TOOLS: List[Dict[str, Any]] = [
                 "newer_than_days": {"type": "integer", "description": "Optional: only messages sent within the last N days."},
                 "limit": {"type": "integer", "description": "Max messages to return (default 10, max 25)."},
             },
+        },
+    },
+    {
+        "name": "list_campaigns",
+        "description": (
+            "List the tenant's email campaigns — both externally-run ESP "
+            "campaigns (kind='external') and LINDA-sent cold-outreach "
+            "campaigns (kind='outreach'), most recent first. Use this FIRST "
+            "when the user says 'our latest/most recent campaign' without "
+            "naming one, or asks to see what campaigns exist. Each row "
+            "includes sent_count, status, and kind, so you rarely need "
+            "get_campaign_stats just to identify the right campaign."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "description": "Optional filter: 'external' or 'outreach'."},
+                "status": {"type": "string", "description": "Optional filter: draft, active, paused, completed, archived."},
+                "limit": {"type": "integer", "description": "Max results (default 10)."},
+            },
+        },
+    },
+    {
+        "name": "get_campaign_stats",
+        "description": (
+            "Fetch the full analytics overview for one campaign: header "
+            "fields plus the rollup (sent, opens, clicks, replies, bounces, "
+            "unsubscribes, conversions, reply sentiment). For outreach "
+            "campaigns (kind='outreach') it ALSO includes the member funnel "
+            "(counts per sequence state) and today's send quota — these are "
+            "not applicable to external campaigns and are omitted for them. "
+            "Quote the rollup's 'sent' (recipient count) when asked how many "
+            "were sent, not the header's sent_count, which can lag mid-flight."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "campaign_id": {"type": "string", "description": "Campaign UUID."},
+            },
+            "required": ["campaign_id"],
+        },
+    },
+    {
+        "name": "list_campaign_replies",
+        "description": (
+            "Get the replies/responses to one campaign. Use this for "
+            "'what have the responses to our campaign been?' or similar. "
+            "Returns attributed inbound replies (with sentiment, subject, "
+            "and a summary snippet) plus a raw reply-event count for "
+            "campaigns whose replies weren't matched to a full interaction "
+            "record — report both if they differ, and explain the gap."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "campaign_id": {"type": "string", "description": "Campaign UUID."},
+                "limit": {"type": "integer", "description": "Max replies to return (default 10)."},
+            },
+            "required": ["campaign_id"],
         },
     },
     {
@@ -313,6 +388,9 @@ READ_TOOLS = {
     "get_action_items",
     "get_interaction_detail",
     "search_sent_email",
+    "list_campaigns",
+    "get_campaign_stats",
+    "list_campaign_replies",
 }
 DRAFT_TOOLS = {
     "propose_action_item",
@@ -435,6 +513,72 @@ async def _exec_get_interaction_detail(ctx: AgentContext, args: Dict[str, Any]) 
             for s in snippet_rows
         ],
     }
+
+
+async def _exec_list_campaigns(ctx: AgentContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        limit = int(args.get("limit", 10))
+    except (TypeError, ValueError):
+        limit = 10
+    rows = await campaign_stats.list_campaigns(
+        ctx.db,
+        ctx.tenant,
+        kind=args.get("kind"),
+        status=args.get("status"),
+        limit=limit,
+    )
+    return {"campaigns": rows}
+
+
+async def _exec_get_campaign_stats(ctx: AgentContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        campaign_uuid = uuid.UUID(args["campaign_id"])
+    except (KeyError, ValueError):
+        return {"error": "invalid campaign_id"}
+
+    # Belt-and-suspenders tenant scoping — RLS also applies, but every
+    # executor that takes an id checks tenant_id explicitly like this.
+    exists = (
+        await ctx.db.execute(
+            select(Campaign.id).where(
+                Campaign.id == campaign_uuid, Campaign.tenant_id == ctx.tenant.id
+            )
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        return {"error": "campaign not found"}
+
+    overview = await campaign_stats.campaign_overview(ctx.db, ctx.tenant, campaign_uuid)
+    if overview is None:
+        return {"error": "campaign not found"}
+    return {"campaign": overview}
+
+
+async def _exec_list_campaign_replies(ctx: AgentContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        campaign_uuid = uuid.UUID(args["campaign_id"])
+    except (KeyError, ValueError):
+        return {"error": "invalid campaign_id"}
+
+    exists = (
+        await ctx.db.execute(
+            select(Campaign.id).where(
+                Campaign.id == campaign_uuid, Campaign.tenant_id == ctx.tenant.id
+            )
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        return {"error": "campaign not found"}
+
+    try:
+        limit = int(args.get("limit", 10))
+    except (TypeError, ValueError):
+        limit = 10
+
+    replies = await campaign_stats.list_campaign_replies(
+        ctx.db, ctx.tenant, campaign_uuid, limit=limit
+    )
+    return replies
 
 
 def _fetch_sent_gmail_sync(
@@ -624,6 +768,12 @@ async def dispatch_tool(
         return await _exec_get_interaction_detail(ctx, args)
     if name == "search_sent_email":
         return await _exec_search_sent_email(ctx, args)
+    if name == "list_campaigns":
+        return await _exec_list_campaigns(ctx, args)
+    if name == "get_campaign_stats":
+        return await _exec_get_campaign_stats(ctx, args)
+    if name == "list_campaign_replies":
+        return await _exec_list_campaign_replies(ctx, args)
     if name in DRAFT_TOOLS:
         return await _create_proposal(ctx, DRAFT_KIND_BY_TOOL[name], args)
     return {"error": f"unknown tool: {name}"}
