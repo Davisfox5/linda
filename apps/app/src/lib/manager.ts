@@ -28,7 +28,17 @@ export type AlertKind =
     | "csat_drop_support"
     | "escalation_surge"
     | "ttr_drift"
-    | "recurring_issue_detected";
+    | "recurring_issue_detected"
+    | "broken_commitment_detected"
+    | "sales_trend_detected"
+    | "cs_trend_detected"
+    | "customer_concern_trend_detected"
+    | "campaign_bounce_spike"
+    | "campaign_optout_spike"
+    | "campaign_no_engagement"
+    | "campaign_stalled"
+    | "campaign_quota_starved"
+    | "campaign_completed_summary";
 
 export type Severity = "high" | "medium" | "low";
 
@@ -352,4 +362,14 @@ export const ALERT_KIND_LABEL: Record<AlertKind, string> = {
     escalation_surge: "Escalation surge",
     ttr_drift: "Time to resolve drift",
     recurring_issue_detected: "Recurring issue",
+    broken_commitment_detected: "Broken commitment",
+    sales_trend_detected: "Sales trend",
+    cs_trend_detected: "CS trend",
+    customer_concern_trend_detected: "Customer concern trend",
+    campaign_bounce_spike: "Campaign bounce spike",
+    campaign_optout_spike: "Campaign opt-out spike",
+    campaign_no_engagement: "Campaign not engaging",
+    campaign_stalled: "Campaign stalled",
+    campaign_quota_starved: "Campaign quota-starved",
+    campaign_completed_summary: "Campaign wrap-up",
 };
