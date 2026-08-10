@@ -189,3 +189,32 @@ step completion keep their dedicated events.
   "step_id": "<uuid>", "changed_keys": ["due_date"]
 }
 ```
+
+### `manager_alert.created`
+
+Fired once per alert as `manager_alert_fanout.fanout` delivers it —
+anomaly scan, trend detector, commitment, concern, and campaign-monitor
+alerts alike. `campaign_id` / `campaign_name` are only present when the
+alert's `evidence` carries them (campaign-monitor alerts); `null` for
+every other kind.
+
+```json
+{
+  "alert_id": "<uuid>",
+  "kind": "topic_spike",
+  "severity": "high",
+  "domain": "support",
+  "title": "Refund mentions jumped 6x in 48 hours.",
+  "body": "Baseline was 1/day; recent 12 calls.",
+  "opened_at": "<iso8601>",
+  "campaign_id": "<uuid or null>",
+  "campaign_name": "July gyms sweep, or null"
+}
+```
+
+Delivery notes: this event is not gated by `AlertChannelConfig` — a
+tenant that muted in-app/Slack alert channels still receives it, since
+webhook registration is itself opt-in. Deliveries are at-least-once
+(retries, and rare fanout overlaps, can re-send the same alert under a
+new `X-Linda-Delivery` id), so consumers should dedupe on
+`data.alert_id`.

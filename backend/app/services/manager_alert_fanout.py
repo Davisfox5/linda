@@ -1,7 +1,7 @@
-"""Fanout layer for manager alerts: in-app + Slack.
+"""Fanout layer for manager alerts: in-app + Slack + outbound webhooks.
 
 Called inline after the anomaly detector inserts a ``ManagerAlert``
-row. Two channels in v1:
+row. Channels in v1:
 
 * **In-app** — one ``Notification`` row per recipient (managers +
   admins in the tenant), plus a Redis pub/sub publish so the SSE bell
@@ -9,6 +9,10 @@ row. Two channels in v1:
 * **Slack** — ``chat.postMessage`` against the tenant's installed
   Slack OAuth integration, subject to ``AlertChannelConfig`` severity
   gates.
+* **Webhook** — one best-effort ``manager_alert.created`` enqueue per
+  alert (anomaly scan, trend detector, commitment, concern, and
+  campaign-monitor alerts alike), same idiom as
+  ``services/outreach/replies.py``.
 
 Email + push are deferred to a follow-up; the dispatch table here is
 shaped to grow.
@@ -38,6 +42,7 @@ from backend.app.services.notifications import (
     publish_notification,
 )
 from backend.app.services.token_crypto import decrypt_token
+from backend.app.services.webhook_dispatcher import dispatch_sync
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +93,7 @@ def _fanout_tenant(
             _deliver_inapp(session, alert, recipients)
         if _slack_enabled_for(alert, config, slack):
             _deliver_slack(slack, alert)
+        _deliver_webhook(session, tenant_id, alert)
 
 
 def _manager_recipients(session: Session, tenant_id) -> List[User]:
@@ -135,6 +141,33 @@ def _deliver_inapp(
                 user.id,
                 alert.id,
             )
+
+
+def _deliver_webhook(session: Session, tenant_id, alert: ManagerAlert) -> None:
+    """Best-effort ``manager_alert.created`` enqueue — never fails the fanout.
+
+    Same idiom as ``services/outreach/replies.py``: ``dispatch_sync`` inside
+    a try/except, ``logger.warning`` on failure. ``campaign_id`` /
+    ``campaign_name`` are lifted from ``alert.evidence`` when the
+    campaign-monitor detector stamped them there; absent for every other
+    alert kind.
+    """
+    try:
+        evidence = alert.evidence if isinstance(alert.evidence, dict) else {}
+        payload = {
+            "alert_id": str(alert.id),
+            "kind": alert.kind,
+            "severity": alert.severity,
+            "domain": alert.domain,
+            "title": alert.title,
+            "body": alert.body,
+            "opened_at": alert.opened_at.isoformat() if alert.opened_at else None,
+            "campaign_id": evidence.get("campaign_id"),
+            "campaign_name": evidence.get("campaign_name"),
+        }
+        dispatch_sync(session, tenant_id, "manager_alert.created", payload)
+    except Exception:
+        logger.warning("manager_alert.created webhook enqueue failed", exc_info=True)
 
 
 def _channel_for_alert(

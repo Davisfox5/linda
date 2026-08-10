@@ -5819,13 +5819,22 @@ def manager_anomaly_scan_all_tenants() -> Dict[str, Any]:
         from backend.app.models import Tenant
         from backend.app.tenant_ctx import tenant_context
 
+        from backend.app.services.campaign_monitor import CAMPAIGN_ALERT_KINDS
+
         for tenant in session.query(Tenant).all():
             with tenant_context(tenant.id, session):
+                # Campaign-monitor kinds are excluded here because that
+                # task runs its own fanout reload (mirrored filter below
+                # in campaign_monitor_scan_all_tenants) — without the
+                # exclusion an overlap of the two reload windows would
+                # fan the same alert out twice, including to external
+                # webhook endpoints.
                 fresh = (
                     session.execute(
                         _select(ManagerAlert).where(
                             ManagerAlert.created_at >= cutoff,
                             ManagerAlert.tenant_id == tenant.id,
+                            ~ManagerAlert.kind.in_(CAMPAIGN_ALERT_KINDS),
                         )
                     )
                     .scalars()

@@ -277,3 +277,97 @@ def test_fanout_sends_slack_for_high_severity(sync_session):
     # Severity-coded block with the alert kind in context.
     blocks_text = str(payload["blocks"])
     assert "churn_surge" in blocks_text
+
+
+# ── manager_alert.created webhook enqueue ───────────────────────────────
+
+
+def test_fanout_enqueues_one_webhook_per_alert(sync_session):
+    """One ``manager_alert.created`` dispatch per alert, with the
+    campaign_id/campaign_name lifted from evidence when present (campaign
+    monitor) and absent otherwise (anomaly/trend alert)."""
+    from backend.app.models import ManagerAlert
+    from backend.app.services.manager_alert_fanout import fanout
+
+    tenant, _, _, _ = _seed_tenant_with_recipients(sync_session)
+    plain_alert = ManagerAlert(
+        tenant_id=tenant.id,
+        kind="topic_spike",
+        severity="high",
+        title="Refund mentions jumped 6x in 48 hours.",
+        body="Baseline was 1/day; recent 12 calls.",
+        evidence={"topic": "refund_request"},
+        fingerprint="fp-plain",
+    )
+    campaign_id = uuid.uuid4()
+    campaign_alert = ManagerAlert(
+        tenant_id=tenant.id,
+        kind="campaign_completed_summary",
+        severity="low",
+        title="Sweep finished.",
+        body="No members left.",
+        evidence={"campaign_id": str(campaign_id), "campaign_name": "July gyms sweep"},
+        fingerprint="fp-campaign",
+    )
+    sync_session.add_all([plain_alert, campaign_alert])
+    sync_session.commit()
+
+    calls: List[Dict[str, Any]] = []
+
+    def _stub_dispatch_sync(db, tenant_id, event, payload, **kwargs):
+        calls.append({"tenant_id": tenant_id, "event": event, "payload": payload})
+        return []
+
+    with patch(
+        "backend.app.services.manager_alert_fanout.dispatch_sync",
+        side_effect=_stub_dispatch_sync,
+    ):
+        fanout(sync_session, [plain_alert, campaign_alert])
+
+    assert len(calls) == 2
+    assert all(c["event"] == "manager_alert.created" for c in calls)
+    assert all(c["tenant_id"] == tenant.id for c in calls)
+
+    by_alert_id = {c["payload"]["alert_id"]: c["payload"] for c in calls}
+    plain_payload = by_alert_id[str(plain_alert.id)]
+    assert plain_payload["kind"] == "topic_spike"
+    assert plain_payload["severity"] == "high"
+    assert plain_payload["title"] == plain_alert.title
+    assert plain_payload["body"] == plain_alert.body
+    assert plain_payload["opened_at"] is not None
+    assert plain_payload["campaign_id"] is None
+    assert plain_payload["campaign_name"] is None
+
+    campaign_payload = by_alert_id[str(campaign_alert.id)]
+    assert campaign_payload["campaign_id"] == str(campaign_id)
+    assert campaign_payload["campaign_name"] == "July gyms sweep"
+
+
+def test_fanout_survives_dispatch_sync_exception(sync_session):
+    """A webhook enqueue failure never blocks the in-app notification."""
+    from backend.app.models import ManagerAlert, Notification
+    from backend.app.services.manager_alert_fanout import fanout
+
+    tenant, manager, admin, _ = _seed_tenant_with_recipients(sync_session)
+    alert = ManagerAlert(
+        tenant_id=tenant.id,
+        kind="topic_spike",
+        severity="medium",
+        title="Some spike.",
+        evidence={},
+        fingerprint="fp-broken-webhook",
+    )
+    sync_session.add(alert)
+    sync_session.commit()
+
+    with patch(
+        "backend.app.services.manager_alert_fanout.dispatch_sync",
+        side_effect=RuntimeError("webhook table missing"),
+    ):
+        fanout(sync_session, [alert])  # must not raise
+    sync_session.commit()
+
+    notifs = sync_session.query(Notification).all()
+    by_user = {str(n.user_id) for n in notifs}
+    assert str(manager.id) in by_user
+    assert str(admin.id) in by_user

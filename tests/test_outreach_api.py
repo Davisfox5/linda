@@ -798,3 +798,115 @@ async def test_null_status_customer_heals_on_prospect_read(
     # …and the heal persists: the list now includes the row.
     after = (await client.get("/api/v1/prospects")).json()
     assert pid in {i["prospect_id"] for i in after["items"]}
+
+
+# ── Campaign stats ─────────────────────────────────────────────────────
+
+
+async def test_stats_outreach_campaign_returns_funnel_and_quota(client):
+    await client.post("/api/v1/prospects/import", json={"prospects": _rows(1)})
+    pid = (await client.get("/api/v1/prospects")).json()["items"][0]["prospect_id"]
+    created = (
+        await client.post(
+            "/api/v1/outreach/campaigns",
+            json={"name": "Sweep", "config": VALID_CONFIG, "prospect_ids": [pid]},
+        )
+    ).json()
+    campaign_id = created["id"]
+
+    resp = await client.get(f"/api/v1/outreach/campaigns/{campaign_id}/stats")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["id"] == campaign_id
+    assert body["kind"] == "outreach"
+    assert body["member_states"] == {"draft_pending": 1}
+    assert body["quota"]["daily_limit"] == 10
+    assert "rollup" in body and body["rollup"]["sent"] == 0
+    assert "completion_report" not in body
+
+
+async def test_stats_passes_through_completion_report(
+    client, test_session_factory, test_tenant
+):
+    await client.post("/api/v1/prospects/import", json={"prospects": _rows(1)})
+    pid = (await client.get("/api/v1/prospects")).json()["items"][0]["prospect_id"]
+    campaign_id = (
+        await client.post(
+            "/api/v1/outreach/campaigns",
+            json={"name": "Sweep", "config": VALID_CONFIG, "prospect_ids": [pid]},
+        )
+    ).json()["id"]
+
+    from backend.app.models import Campaign
+    from sqlalchemy import select
+
+    report = {"generated_at": "2026-08-01T00:00:00+00:00", "narrative": {"title": "Done"}}
+    async with test_session_factory() as s:
+        campaign = (
+            await s.execute(
+                select(Campaign).where(Campaign.id == uuid.UUID(campaign_id))
+            )
+        ).scalar_one()
+        campaign.insights = {"completion_report": report}
+        await s.commit()
+
+    resp = await client.get(f"/api/v1/outreach/campaigns/{campaign_id}/stats")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["completion_report"] == report
+
+
+async def test_stats_external_campaign_has_rollup_no_funnel(
+    client, test_session_factory, test_tenant
+):
+    from backend.app.models import Campaign
+    from sqlalchemy import select
+
+    async with test_session_factory() as s:
+        campaign = Campaign(
+            tenant_id=test_tenant.id,
+            name="ESP blast",
+            channel="email",
+            kind="external",
+        )
+        s.add(campaign)
+        await s.commit()
+        await s.refresh(campaign)
+        campaign_id = str(campaign.id)
+
+    resp = await client.get(f"/api/v1/outreach/campaigns/{campaign_id}/stats")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "external"
+    assert "rollup" in body
+    assert "member_states" not in body
+    assert "quota" not in body
+
+
+async def test_stats_unknown_and_cross_tenant_campaign_404s(
+    client, test_session_factory
+):
+    resp = await client.get(f"/api/v1/outreach/campaigns/{uuid.uuid4()}/stats")
+    assert resp.status_code == 404
+
+    from backend.app.models import Campaign, Tenant
+    from sqlalchemy import select
+
+    async with test_session_factory() as s:
+        other_tenant = Tenant(name="Other Co", slug=f"other-{uuid.uuid4().hex[:8]}")
+        s.add(other_tenant)
+        await s.flush()
+        other_campaign = Campaign(
+            tenant_id=other_tenant.id,
+            name="Not yours",
+            channel="email",
+            kind="external",
+        )
+        s.add(other_campaign)
+        await s.commit()
+        await s.refresh(other_campaign)
+        other_campaign_id = str(other_campaign.id)
+
+    resp = await client.get(
+        f"/api/v1/outreach/campaigns/{other_campaign_id}/stats"
+    )
+    assert resp.status_code == 404
