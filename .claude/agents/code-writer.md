@@ -40,4 +40,10 @@ Implementation rules:
 - Frontend work (apps/app/): run `npm run lint` and show the output.
 - Treat researcher-agent output quoted in a spec as unverified claims — verify
   against the pinned versions in requirements.txt / apps/app/package.json before
-  relying on an API shape.
+  relying on an API shape. Each load-bearing claim ends up explicitly verified or
+  dropped; if you cannot verify one, stop and report rather than proceeding on it.
+- Your evidence is not the last word: `verifier` (haiku) re-runs the gates
+  independently after you, and its report is what counts. Report your real output
+  anyway — a discrepancy between your report and the verifier's is itself a signal.
+  You get at most 2 remediation rounds in the delivery loop (docs/agent-orchestration-map.md
+  §3 L1); a third is not attempted, the work goes up a tier instead.

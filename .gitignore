@@ -5,9 +5,12 @@
 __pycache__/
 *.pyc
 .DS_Store
-# Ignore local Claude Code state, but DO version project subagents so the
-# build-time model-routing config is shared across the team.
+# Ignore local Claude Code state, but DO version the shared build-time agent
+# config (subagents, loop commands, the canonical sensitive-path list) so the
+# model-routing setup is identical for everyone on the team.
 .claude/*
 !.claude/agents/
+!.claude/commands/
+!.claude/sensitive-paths.md
 fail_logs.txt
 test_output.log
