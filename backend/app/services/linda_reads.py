@@ -365,6 +365,83 @@ async def get_profile(
 # ── Team metrics ───────────────────────────────────────────────────────────
 
 
+async def list_action_plans(
+    db: AsyncSession,
+    tenant: Tenant,
+    status: Optional[str] = None,
+    customer_id: Any = None,
+    limit: int = 10,
+) -> Dict[str, Any]:
+    """Action plans with their steps — the DAG the pipeline synthesizes.
+
+    Chat could previously *create* a plan and never read one back. This is
+    also the only source of the ``step_id`` that ``propose_step_dispatch``
+    needs; a write tool whose id has no read tool is unreachable by
+    construction (see T0.3 in the plan doc).
+    """
+    from backend.app.models import ActionPlan, ActionStep
+
+    stmt = select(ActionPlan).where(ActionPlan.tenant_id == tenant.id)
+    if status:
+        stmt = stmt.where(ActionPlan.status == str(status).lower())
+    if customer_id is not None:
+        customer_uuid = _parse_uuid(customer_id)
+        if customer_uuid is None:
+            return {"error": "invalid customer_id"}
+        stmt = stmt.where(ActionPlan.customer_id == customer_uuid)
+    stmt = stmt.order_by(ActionPlan.created_at.desc()).limit(
+        _clamp(limit, default=10, lo=1, hi=25)
+    )
+    plans = (await db.execute(stmt)).scalars().all()
+    if not plans:
+        return {"action_plans": [], "count": 0}
+
+    plan_ids = [p.id for p in plans]
+    steps = (
+        await db.execute(
+            select(ActionStep)
+            .where(
+                ActionStep.tenant_id == tenant.id,
+                ActionStep.plan_id.in_(plan_ids),
+                ActionStep.state != "deleted",
+            )
+            .order_by(ActionStep.created_at)
+        )
+    ).scalars().all()
+
+    by_plan: Dict[Any, List[Dict[str, Any]]] = {}
+    for s in steps:
+        by_plan.setdefault(s.plan_id, []).append(
+            {
+                "step_id": str(s.id),
+                "title": s.title,
+                "state": s.state,
+                "channel": s.recommended_channel,
+                "due_date": s.due_date.isoformat() if s.due_date else None,
+                "priority": s.priority,
+                "blocked_on_step_ids": [str(d) for d in (s.depends_on or [])],
+                "artifact_stale": bool(s.artifact_stale),
+            }
+        )
+
+    return {
+        "count": len(plans),
+        "action_plans": [
+            {
+                "plan_id": str(p.id),
+                "goal": p.goal,
+                "status": p.status,
+                "domain": p.domain,
+                "interaction_id": str(p.interaction_id) if p.interaction_id else None,
+                "customer_id": str(p.customer_id) if p.customer_id else None,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+                "steps": by_plan.get(p.id, []),
+            }
+            for p in plans
+        ],
+    }
+
+
 VALID_PERIODS = ("7d", "14d", "30d", "60d", "90d")
 
 

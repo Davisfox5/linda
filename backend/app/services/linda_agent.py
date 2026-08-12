@@ -35,6 +35,7 @@ from backend.app.config import get_settings
 from backend.app.services import (
     campaign_stats,
     linda_context,
+    linda_dispatch,
     linda_entity_lookup,
     linda_reads,
 )
@@ -162,7 +163,11 @@ PRODUCT_KNOWLEDGE = (
     "Say exactly which operation you're proposing and to which record.\n"
     "- propose_queue_bump_email: queues a send for the campaign scheduler; "
     "it goes out inside the campaign's window and daily throttle, not "
-    "immediately."
+    "immediately.\n"
+    "- propose_step_dispatch: really sends the step's email / writes its "
+    "CRM note / books its meeting, using the content the step already "
+    "has. Describe what will go out and to whom before proposing it, and "
+    "never imply you wrote fresh copy — you didn't."
 )
 
 
@@ -465,6 +470,60 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "list_action_plans",
+        "description": (
+            "List the tenant's action plans and their steps — the multi-step "
+            "follow-up workflows synthesized from calls, plus any Linda "
+            "created. Each step comes back with its id, state (ready / "
+            "blocked / in_progress / awaiting_response / done), channel, and "
+            "what it's blocked on. Use it for \"what's outstanding on "
+            "Acme?\", \"what's next on that plan?\", and to get the step_id "
+            "that propose_step_dispatch needs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["draft", "active", "completed", "abandoned"],
+                    "description": "Optional plan-status filter.",
+                },
+                "customer_id": {
+                    "type": "string",
+                    "description": "Optional — only plans for this customer (from resolve_entity).",
+                },
+                "limit": {"type": "integer", "description": "Max plans (default 10, max 25)."},
+            },
+        },
+    },
+    {
+        "name": "propose_step_dispatch",
+        "description": (
+            "Propose actually carrying out an existing action-plan step: "
+            "sending its email from the tenant's mailbox, writing its note "
+            "to the CRM, or booking its meeting. This is a REAL outbound "
+            "action on confirm — say plainly what will go out and to whom "
+            "before you call it. Get the step_id from list_action_plans. "
+            "The proposal is refused up front if the step isn't sendable "
+            "(already done, no generated content yet, unfilled "
+            "placeholders, or a channel with no automatic send) — relay "
+            "that reason to the user rather than trying another route. "
+            "This does not compose new content: it sends what the step "
+            "already has. To change the wording first, the user edits the "
+            "step in the action plan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "step_id": {
+                    "type": "string",
+                    "description": "Action-step UUID from list_action_plans.",
+                },
+            },
+            "required": ["step_id"],
+        },
+    },
+    {
         "name": "propose_action_item",
         "description": (
             "Propose a follow-up task attached to a specific call or email. "
@@ -642,6 +701,7 @@ READ_TOOLS = {
     "search_knowledge_base",
     "get_profile",
     "get_team_metrics",
+    "list_action_plans",
 }
 DRAFT_TOOLS = {
     "propose_action_item",
@@ -649,6 +709,7 @@ DRAFT_TOOLS = {
     "propose_crm_update",
     "propose_action_plan",
     "propose_queue_bump_email",
+    "propose_step_dispatch",
 }
 
 DRAFT_KIND_BY_TOOL = {
@@ -657,7 +718,14 @@ DRAFT_KIND_BY_TOOL = {
     "propose_crm_update": "crm_update",
     "propose_action_plan": "action_plan",
     "propose_queue_bump_email": "queue_bump_email",
+    "propose_step_dispatch": "step_dispatch",
 }
+
+# Draft tools that validate before staging a proposal. Most draft tools
+# just record what the model asked for; these check the request is
+# actually executable first, so the user is never shown a Confirm button
+# that is going to fail.
+PREFLIGHT_DRAFT_TOOLS = {"propose_step_dispatch"}
 
 
 # ── Dispatcher ─────────────────────────────────────────────────────────────
@@ -1100,6 +1168,21 @@ async def dispatch_tool(
         return await linda_reads.team_metrics(
             ctx.db, ctx.tenant, str(args.get("period") or "30d")
         )
+    if name == "list_action_plans":
+        return await linda_reads.list_action_plans(
+            ctx.db,
+            ctx.tenant,
+            status=args.get("status"),
+            customer_id=args.get("customer_id"),
+            limit=args.get("limit", 10),
+        )
+    if name == "propose_step_dispatch":
+        # Validate before staging: a dispatch proposal the confirm would
+        # refuse is the exact Tier 0 failure this work started from.
+        preview = await linda_dispatch.preview(ctx.db, ctx.tenant, args.get("step_id"))
+        if "error" in preview:
+            return preview
+        return await _create_proposal(ctx, "step_dispatch", preview)
     if name in DRAFT_TOOLS:
         return await _create_proposal(ctx, DRAFT_KIND_BY_TOOL[name], args)
     return {"error": f"unknown tool: {name}"}

@@ -1,8 +1,9 @@
 # Ask LINDA — tool gaps and agent-graph gaps
 
-Status: **steps 1–4 of §4 implemented** (Tier 0 repairs, `resolve_entity`, the G2
-context seam, and four of the seven Tier 1 reads — this branch); everything else
-is still proposal.
+Status: **steps 1–5 of §4 implemented** (Tier 0 repairs, `resolve_entity`, the G2
+context seam, five Tier 1 reads, and `propose_step_dispatch` — this branch).
+Remaining: G5 outcome loop, then G4/G3. Tools still open: `get_scorecard`,
+`list_manager_alerts`, and the Tier 2 update/send verbs.
 Date: 2026-08-12.
 Framework: [`agent-infrastructure-knowledge-base.md`](../../agent-infrastructure-knowledge-base.md)
 (harness → router → feedback loops), applied to the Ask LINDA chat surface
@@ -117,11 +118,12 @@ rows. Chat now writes `open` and the tool normalizes legacy spellings on read
 
 ### Tier 1 — reads the product already promises but cannot deliver
 
-> **Four shipped on this branch** (`services/linda_reads.py`): `get_customer_360`,
-> `search_knowledge_base`, `get_profile`, `get_team_metrics`. `get_scorecard`,
-> `list_manager_alerts` and `get_action_plan` (T1.4, T1.7, T1.8) remain open —
-> held back deliberately so tool-selection accuracy can be observed before the
-> registry grows again.
+> **Five shipped on this branch** (`services/linda_reads.py`): `get_customer_360`,
+> `search_knowledge_base`, `get_profile`, `get_team_metrics`, and
+> `list_action_plans`. The last was originally held back with T1.4/T1.7 — it came
+> forward because `propose_step_dispatch` is keyed on a `step_id` that no other
+> read returns, and shipping a write whose id has no source is precisely T0.3.
+> `get_scorecard` (T1.4) and `list_manager_alerts` (T1.7) remain open.
 >
 > **Correction to §3 below.** This document originally said an API-key caller
 > (`AgentContext.user is None`) should be denied on `get_profile`, "deny is the
@@ -153,7 +155,7 @@ hallucinates or disclaims.
 | T1.5 ✅ | `search_knowledge_base` | `kb_document_retrieval.retrieve` (Qdrant RAG) | The tenant's own policies/playbooks. Without it Linda answers "what's our refund policy" from the base model — the highest-risk hallucination surface in the product. |
 | T1.6 ✅ | `get_team_metrics` | `tenant_insights_service.aggregate_tenant_period`, `api/analytics.py` | "How did the team do this week?" today costs N searches and blows the 5-cycle cap. Aggregates must be one tool call, not a loop. |
 | T1.7 | `list_manager_alerts` | `ManagerAlert` (`models.py:3223`), fed by `anomaly_detector.py` + `campaign_monitor.py` | The proactive detectors already fire; chat can't read what they found, so the user hears about an alert in Slack and Linda knows nothing about it. |
-| T1.8 | `get_action_plan` / `list_action_plans` | `ActionPlan` / `ActionStep` (`models.py:898,965`) | Linda can *create* a plan (`propose_action_plan`) and then cannot read it back. Write-only is not a workflow. |
+| T1.8 ✅ | `get_action_plan` / `list_action_plans` | `ActionPlan` / `ActionStep` (`models.py:898,965`) | Linda can *create* a plan (`propose_action_plan`) and then cannot read it back. Write-only is not a workflow. |
 
 Deliberately **not** proposed: dump-everything list tools, raw SQL, per-snippet or
 per-webhook tools. The knowledge base is explicit (§4, tool design) that a few
@@ -170,7 +172,33 @@ reprioritize. Without it, "mark that done" is impossible and Linda's own created
 items accumulate forever.
 
 **T2.2 — `propose_step_dispatch` — the largest single capability unlock in this
-document.** `action_plan/dispatch.py` is *already* the single code path that sends
+document. ✅ SHIPPED** (`services/linda_dispatch.py`)
+
+> Chat is now a **third caller** of `action_plan/dispatch.py`, not a third
+> implementation — it routes through the auto-executor's own
+> `_dispatch_for_channel`, and a test asserts the two "what can be sent" channel
+> sets stay identical.
+>
+> **On `AUTO_EXECUTION_ENABLED`:** it does *not* gate this, deliberately. That flag
+> governs *unattended* dispatch — the executor acting with nobody in the loop, on a
+> per-(tenant, action_class) policy that defaults to manual. A user reading a
+> proposal card and clicking Confirm **is** the human approval the flag exists to
+> require, which is why the manual `/send-email` endpoint is likewise ungated.
+>
+> **Stricter than the manual endpoints, on purpose.** Those dispatch from any state
+> with no artifact checks, because a rep is looking at the rendered artifact when
+> they click. A Linda user is approving Linda's *description*, so this path also
+> enforces the auto-executor's pre-flight: plan active, step actually actionable
+> (no re-sending a `done` step), artifact present with **no `unfilled_slots`** (an
+> unfilled artifact still contains literal `{{placeholders}}`), and a dispatchable
+> channel. Pre-flight runs **twice** — once before staging, so an un-sendable step
+> never becomes a Confirm button, and again at confirm time, because proposals live
+> 24h and a step can be sent or regenerated in between.
+>
+> **`list_action_plans` shipped alongside it** (T1.8), out of the held-back set:
+> `propose_step_dispatch` is keyed on a `step_id` and no read tool returned one.
+> Shipping the write alone would have recreated T0.3 exactly.
+ `action_plan/dispatch.py` is *already* the single code path that sends
 an email, writes a CRM note/task, or books a calendar event for an `ActionStep`,
 and it is already shared by the manual endpoints and the governed auto-executor
 (`action_plan/executor.py`, gated behind `settings.AUTO_EXECUTION_ENABLED` +
@@ -368,8 +396,8 @@ with Tier 1; the write edge should be async, off the response path.
    `get_profile` → `get_team_metrics`~~ — ✅ those four done on this branch; the
    remaining three (`get_scorecard`, `list_manager_alerts`, `get_action_plan`)
    are held until tool-selection accuracy has been observed at 16 tools.
-5. **T2.2 `propose_step_dispatch`** — real-world effect through the existing
-   governed dispatch path.
+5. ~~**T2.2 `propose_step_dispatch`**~~ — ✅ done on this branch, with
+   `list_action_plans` alongside it (a write tool needs a read that returns its id).
 6. **G5 outcome loop** — start recording outcomes as soon as writes have effect,
    so the flywheel has data before anyone tunes anything.
 7. **G4 outbound turn + G3 job graph** — the genuinely new infrastructure; do it

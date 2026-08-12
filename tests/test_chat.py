@@ -158,6 +158,9 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
         "search_knowledge_base",
         "get_profile",
         "get_team_metrics",
+        # Reads back the plans chat could previously only create — and is
+        # the only source of the step_id propose_step_dispatch needs.
+        "list_action_plans",
     }
     assert DRAFT_TOOLS == {
         "propose_action_item",
@@ -171,6 +174,10 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
         # an enrolled prospect (send stays with the campaign scheduler's
         # window + throttle). Executes in api/chat.py's proposal branch.
         "propose_queue_bump_email",
+        # propose_step_dispatch really sends/commits/books an existing
+        # action step through action_plan/dispatch.py — the same path the
+        # manual endpoints and the governed auto-executor use.
+        "propose_step_dispatch",
     }
     for tool in TOOLS:
         assert tool["input_schema"]["type"] == "object"

@@ -508,6 +508,15 @@ async def _execute_proposal(
         await db.flush()
         return item.id
 
+    if proposal.kind == "step_dispatch":
+        from backend.app.services import linda_dispatch
+
+        outcome = await linda_dispatch.execute(db, tenant, payload)
+        proposal.payload = dict(payload, dispatch_result=outcome)
+        # The step, not a new row, is what changed — its id is already in
+        # the payload, and email_send_id/external_id live in the outcome.
+        return None
+
     if proposal.kind == "crm_update":
         external_id = await _execute_crm_update(db, payload, tenant)
         # Record what the write produced so the confirmed proposal is an
