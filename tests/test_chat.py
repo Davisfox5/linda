@@ -9,6 +9,7 @@ lifecycle, white-label guard, and the rate-limiter arithmetic.
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -878,6 +879,134 @@ def test_run_chat_turn_persists_rows_in_strict_time_order():
     assert times == sorted(times) and len(set(times)) == len(times), (
         "created_at must be strictly increasing so replay order is deterministic"
     )
+
+
+def _run_turn_with_tool_result(tool_result, tool_name="search_interactions"):
+    """Drive one tool-using turn whose tool returns ``tool_result``.
+
+    Returns ``(events, persisted_rows)`` so a test can assert on both what
+    the UI saw and what went into the transcript.
+    """
+    import backend.app.services.linda_agent as la
+
+    session = _FakeSession(scripted=[_ScalarResult([])])
+    ctx = _ctx(session)
+    calls = {"n": 0}
+
+    class _FakeStream:
+        def __init__(self, final):
+            self._final = final
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def __aiter__(self):
+            async def _gen():
+                if False:
+                    yield None
+            return _gen()
+
+        async def get_final_message(self):
+            return self._final
+
+    def _fake_astream(self, req):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            final = SimpleNamespace(
+                stop_reason="tool_use",
+                content=[SimpleNamespace(
+                    type="tool_use", id="toolu_a", name=tool_name,
+                    input={"query": "pricing"},
+                )],
+            )
+        else:
+            final = SimpleNamespace(
+                stop_reason="end_turn",
+                content=[SimpleNamespace(type="text", text="Here you go.")],
+            )
+        return _FakeStream(final)
+
+    async def _fake_dispatch(ctx, name, args):
+        return tool_result
+
+    with patch.object(la, "get_async_anthropic", lambda: MagicMock()), \
+         patch.object(la.ModelRouter, "astream", _fake_astream), \
+         patch.object(la, "dispatch_tool", _fake_dispatch):
+        async def _run():
+            return [ev async for ev in la.run_chat_turn(ctx, "what about pricing?")]
+        events = asyncio.run(_run())
+
+    rows = [o for o in session.added if type(o).__name__ == "LindaChatMessage"]
+    return events, rows
+
+
+def test_tool_results_are_context_fitted_before_entering_the_transcript():
+    """The seam has to bite BEFORE persistence: whatever is written to the
+    tool row is replayed on every later turn inside the history window, so
+    an unfitted result bloats the context for the rest of the conversation.
+    """
+    from backend.app.services.linda_context import FIT_KEY
+
+    wide = {
+        "results": [
+            {
+                "interaction_id": "11111111-1111-1111-1111-%012d" % i,
+                "summary": "s" * 4000,
+                "channel": "voice",
+            }
+            for i in range(40)
+        ]
+    }
+
+    events, rows = _run_turn_with_tool_result(wide)
+
+    tool_row = next(r for r in rows if r.role == "tool")
+    persisted = json.loads(tool_row.tool_calls[0]["content"])
+    assert len(persisted["results"]) < 40
+    assert FIT_KEY in persisted
+    # Ids survive intact — they're how the model fetches the full record.
+    assert all(len(r["interaction_id"]) == 36 for r in persisted["results"])
+
+    # The SSE event carries the same fitted shape the model saw, so what a
+    # reader sees in the stream matches what actually drove the answer.
+    result_event = next(e for e in events if e["type"] == "tool_result")
+    assert result_event["result"] == persisted
+
+
+def test_small_tool_results_reach_the_transcript_unchanged():
+    from backend.app.services.linda_context import FIT_KEY
+
+    small = {"results": [{"interaction_id": "abc", "summary": "short and sweet"}]}
+    events, rows = _run_turn_with_tool_result(small)
+
+    tool_row = next(r for r in rows if r.role == "tool")
+    assert json.loads(tool_row.tool_calls[0]["content"]) == small
+    assert FIT_KEY not in json.loads(tool_row.tool_calls[0]["content"])
+
+
+def test_proposals_are_never_context_fitted():
+    """A proposal payload is what the user confirms — reshaping it would
+    change what they're agreeing to."""
+    from backend.app.services.linda_context import FIT_KEY
+
+    proposal = {
+        "proposal_id": str(uuid.uuid4()),
+        "kind": "email_draft",
+        "status": "pending",
+        "preview": {"subject": "Re: pricing", "body": "b" * 9000},
+        "expires_at": "2026-08-13T00:00:00+00:00",
+    }
+    events, rows = _run_turn_with_tool_result(proposal, tool_name="propose_email_draft")
+
+    event = next(e for e in events if e["type"] == "proposal")
+    assert event["proposal"]["preview"]["body"] == "b" * 9000
+    tool_row = next(r for r in rows if r.role == "tool")
+    persisted = json.loads(tool_row.tool_calls[0]["content"])
+    assert FIT_KEY not in persisted
+    assert persisted["preview"]["body"] == "b" * 9000
 
 
 def test_repair_tool_pairs_drops_dangling_tool_result():

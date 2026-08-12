@@ -173,6 +173,19 @@ be hardcoded outside the catalog (`tests/test_model_catalog.py` fails the build 
 | `llm_client.py` | Anthropic client construction plus `acreate_with_failover`: transient errors (429/5xx/timeout) retry on the **same** model; model-unavailable (deprecated/suspended/404) fails over once to the next cheaper tier. Also `compute_max_tokens`, the project-wide `max_tokens` policy — tier-aware defaults scaling with input length under a per-tier ceiling. |
 | `llm_telemetry.py` | Records every completion's usage to `llm_call_telemetry`; a nightly task aggregates per (call_site, tier) into `llm_ceiling_recommendation`, and `compute_max_tokens` consults those learned ceilings before the static caps. Fire-and-forget: a telemetry failure never fails a customer call. |
 
+**Ask LINDA context budget.** Chat tool results pass through
+`services/linda_context.py` before they enter the message history or the persisted
+transcript (which is replayed every later turn inside the 40-message window, so an
+unfitted result bloats the context for the rest of the conversation). Stage 1 is
+deterministic — cap free-text fields, then drop trailing rows — and always runs.
+Stage 2 is an optional Haiku sub-call (`call_site="linda_condense"`, own context)
+that re-selects rows against the user's question when stage 1 would drop some; it
+is restricted to free-text search tools, and every row it returns is verified back
+against the input by id before use, so a model can neither restate a metric nor
+introduce an id. Any failure falls back to the stage-1 result — condensation never
+fails a tool call. Budget + off-switch: `LINDA_TOOL_RESULT_BUDGET_CHARS` /
+`LINDA_CONDENSE_ENABLED` in `config.py`.
+
 ## 6. Process model & deployment
 
 Deployed on **Fly.io**. `fly.toml` `[processes]` defines three roles off one image:

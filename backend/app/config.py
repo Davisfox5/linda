@@ -303,6 +303,20 @@ class Settings(BaseSettings):
     # steps) can't fan out unbounded sends in one run.
     AUTO_EXECUTION_MAX_DISPATCHES_PER_TENANT: int = 5
 
+    # ── Ask LINDA context budget ──────────────────────────
+    # Per-tool-result ceiling, in characters of serialized JSON, on what
+    # enters the chat's working context. Raw tool output is the main way
+    # a chat context bloats: one wide search can outweigh the entire
+    # conversation, and the effective context window is far smaller than
+    # the advertised one (context rot). Results under budget pass through
+    # untouched — this only bites the wide ones.
+    LINDA_TOOL_RESULT_BUDGET_CHARS: int = 6000
+    # Whether an over-budget prose result may be condensed by a Haiku
+    # sub-call (question-aware selection) before falling back to
+    # deterministic tail-dropping. Off => deterministic only. Numeric
+    # results are never model-condensed either way; see linda_context.
+    LINDA_CONDENSE_ENABLED: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

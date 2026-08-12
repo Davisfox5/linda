@@ -31,7 +31,8 @@ from backend.app.models import (
     User,
     WriteProposal,
 )
-from backend.app.services import campaign_stats, linda_entity_lookup
+from backend.app.config import get_settings
+from backend.app.services import campaign_stats, linda_context, linda_entity_lookup
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.model_router import (
     CacheableBlock,
@@ -1130,6 +1131,9 @@ async def run_chat_turn(
     """
     client = get_async_anthropic()
     router = ModelRouter(client)
+    # Read at call time, not import time, so a settings override in a test
+    # or a restart-free config change takes effect on the next turn.
+    settings = get_settings()
     system_blocks = build_system_blocks(ctx.tenant, ctx.user)
     # Cacheable system blocks for the router (same content, same cache flags).
     req_system = [
@@ -1231,8 +1235,22 @@ async def run_chat_turn(
                 result = {"error": str(exc)}
 
             if block.name in DRAFT_TOOLS and "proposal_id" in result:
+                # Proposals are small, and their payload is what the user
+                # confirms — never reshape them.
                 yield {"type": "proposal", "proposal": result}
             else:
+                # Fit the result to the working-context budget BEFORE it
+                # enters history or the transcript: whatever we persist here
+                # is replayed on every later turn, so an unfitted result
+                # bloats the context for the rest of the conversation.
+                result = await linda_context.fit_tool_result(
+                    result,
+                    tool_name=block.name,
+                    question=user_message,
+                    budget=settings.LINDA_TOOL_RESULT_BUDGET_CHARS,
+                    router=router,
+                    condense_enabled=settings.LINDA_CONDENSE_ENABLED,
+                )
                 yield {"type": "tool_result", "tool": block.name, "result": result}
 
             tool_results.append(

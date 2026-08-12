@@ -1,7 +1,7 @@
 # Ask LINDA — tool gaps and agent-graph gaps
 
-Status: **steps 1–2 of §4 implemented** (Tier 0 repairs + `resolve_entity`, this
-branch); everything else is still proposal.
+Status: **steps 1–3 of §4 implemented** (Tier 0 repairs, `resolve_entity`, and the
+G2 context seam — this branch); everything else is still proposal.
 Date: 2026-08-12.
 Framework: [`agent-infrastructure-knowledge-base.md`](../../agent-infrastructure-knowledge-base.md)
 (harness → router → feedback loops), applied to the Ask LINDA chat surface
@@ -222,7 +222,21 @@ Cap both; terminate on no-improvement. This is the evaluator-optimizer pattern t
 knowledge base names first-class (§4) and the one pattern the repo has never
 applied to a customer-facing surface.
 
-### G2 — retrieval subgraph (context isolation) — needed *before* Tier 1 lands
+### G2 — retrieval subgraph (context isolation) ✅ SHIPPED
+
+> **Done on this branch** as `services/linda_context.py`, wired into
+> `run_chat_turn` before history/persistence. Two stages: deterministic
+> projection (cap text fields → drop trailing rows → tighten text if the row floor
+> still overshoots) always runs; a Haiku sub-call in its own context re-selects
+> rows against the user's question only when stage 1 would drop some, and only for
+> free-text search tools. Two safety rules made it into code and tests: **numbers
+> never pass through a model** (campaign rollups/funnels/quotas are
+> deterministic-only), and **the model's output is verified, not trusted** — rows
+> whose id wasn't in the input are discarded, and if verification empties the
+> selection the deterministic result stands. Any failure falls back. The reduction
+> is disclosed to the model in-band so it can't report "3 results" when there were
+> 40. Config: `LINDA_TOOL_RESULT_BUDGET_CHARS`, `LINDA_CONDENSE_ENABLED`.
+
 
 Every tool result is `json.dumps`'d whole into the main context
 (`linda_agent.py:1070`). Adding T1.2–T1.8 without changing that will bloat the
@@ -325,8 +339,8 @@ with Tier 1; the write edge should be async, off the response path.
 
 1. ~~**Tier 0 repairs** (T0.1–T0.3)~~ — ✅ done on this branch.
 2. ~~**T1.1 `resolve_entity`**~~ — ✅ done on this branch.
-3. **G2 retrieval subgraph** — build the context-isolation seam *before* the wide
-   reads land, not after rot shows up.
+3. ~~**G2 retrieval subgraph**~~ — ✅ done on this branch; the wide reads can now
+   land without each one bloating the window.
 4. **Tier 1 reads**, prioritised `get_customer_360` → `search_knowledge_base` →
    `get_profile` → `get_team_metrics` → the rest.
 5. **T2.2 `propose_step_dispatch`** — real-world effect through the existing
