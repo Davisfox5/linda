@@ -2938,6 +2938,72 @@ class WriteProposal(Base):
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
+class LindaActionOutcome(Base):
+    """What actually happened after Linda proposed something.
+
+    ``WriteProposal`` records that a write was staged and decided; nothing
+    recorded whether the action then *worked*. Without that there is no
+    evidence base for tuning Linda's tool use — the analysis side has this
+    flywheel (llm_judge -> insight_quality_scores -> regression_watchdog)
+    and chat had none.
+
+    One row per decided proposal, written at decision time so a cancel is
+    captured (the strongest negative signal available, and previously
+    discarded entirely). ``outcome`` starts ``pending`` and a beat-driven
+    observer resolves it from deterministic downstream state — an action
+    item closing, an outreach member replying, a step completing. No LLM
+    judges anything here: every signal is a real row changing.
+    """
+
+    __tablename__ = "linda_action_outcomes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    proposal_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("write_proposals.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    conversation_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    # Mirrors WriteProposal.kind so the analytics table stands alone even
+    # after a proposal is pruned.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    # What the human did: confirmed | cancelled | expired.
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    resulting_entity_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True))
+    # pending | succeeded | failed | rejected | no_signal.
+    outcome: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", server_default="pending"
+    )
+    # The evidence: which rows were checked and what they said.
+    outcome_detail: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    observed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    observation_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('confirmed', 'cancelled', 'expired')",
+            name="ck_linda_action_outcomes_decision",
+        ),
+        CheckConstraint(
+            "outcome IN ('pending', 'succeeded', 'failed', 'rejected', 'no_signal')",
+            name="ck_linda_action_outcomes_outcome",
+        ),
+        Index("ix_linda_outcomes_tenant_outcome", "tenant_id", "outcome"),
+        Index("ix_linda_outcomes_tenant_kind", "tenant_id", "kind"),
+    )
+
+
 # ──────────────────────────────────────────────────────────
 # PUBLIC DEMO — email capture (pre-signup leads)
 # ──────────────────────────────────────────────────────────

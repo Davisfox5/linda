@@ -274,6 +274,7 @@ async def confirm_proposal(
 
     if proposal.expires_at < datetime.now(timezone.utc):
         proposal.status = "expired"
+        await _record_outcome(db, proposal, "expired", None)
         await db.commit()
         raise HTTPException(status_code=410, detail="Proposal has expired")
 
@@ -281,6 +282,7 @@ async def confirm_proposal(
     proposal.status = "confirmed"
     proposal.confirmed_at = datetime.now(timezone.utc)
     proposal.resulting_entity_id = resulting_id
+    await _record_outcome(db, proposal, "confirmed", resulting_id)
     await db.commit()
     await db.refresh(proposal)
     return proposal
@@ -308,12 +310,41 @@ async def cancel_proposal(
         raise HTTPException(status_code=409, detail=f"Proposal is {proposal.status}")
 
     proposal.status = "cancelled"
+    # A cancel is the strongest negative signal chat produces about its own
+    # proposal quality, and it used to be discarded entirely.
+    await _record_outcome(db, proposal, "cancelled", None)
     await db.commit()
     await db.refresh(proposal)
     return proposal
 
 
 # ── Proposal executor ──────────────────────────────────────────────────────
+
+
+async def _record_outcome(
+    db: AsyncSession,
+    proposal: WriteProposal,
+    decision: str,
+    resulting_id: Optional[uuid.UUID],
+) -> None:
+    """Stage the analytics row for a decided proposal (gap G5).
+
+    Best-effort: an outcome row is worth having, never worth failing a
+    user's confirm over.
+    """
+    from backend.app.services import linda_outcomes
+
+    # step_dispatch's downstream signal is the step itself, not a new row,
+    # so the observer needs the step id recorded up front.
+    extra: Dict[str, Any] = {}
+    if proposal.kind == "step_dispatch":
+        step_id = (proposal.payload or {}).get("step_id")
+        if step_id:
+            extra["step_id"] = str(step_id)
+
+    await linda_outcomes.record_decision_async(
+        db, proposal, decision, resulting_id, extra_detail=extra
+    )
 
 
 async def _execute_crm_update(

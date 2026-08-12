@@ -209,6 +209,8 @@ celery_app.conf.update(
         # Deterministic per-campaign SQL detectors + one Haiku render per
         # new alert — batch lane like the other manager-view sweeps.
         "campaign_monitor_scan_all_tenants": {"queue": "batch"},
+        # Pure SQL observation of pending chat-action outcomes, no LLM.
+        "linda_outcome_scan": {"queue": "batch"},
     },
     beat_schedule={
         # Weekly rollup: every Monday 00:15 UTC, covering the prior Mon–Sun.
@@ -302,6 +304,14 @@ celery_app.conf.update(
         "broken-commitment-scan": {
             "task": "broken_commitment_scan",
             "schedule": crontab(minute=0, hour=8),
+        },
+        # Settle pending Ask LINDA action outcomes. Daily is the right
+        # cadence: the signals it waits on (an action item being closed, a
+        # prospect replying) move on human timescales, and the 14-day
+        # horizon means nothing is lost by not checking hourly.
+        "linda-outcome-scan": {
+            "task": "linda_outcome_scan",
+            "schedule": crontab(minute=20, hour=8),
         },
         # ── Email ingestion ───────────────────────────────────────────
         # Real-time delivery comes from Gmail Pub/Sub + Graph push. This
@@ -5884,6 +5894,27 @@ def manager_anomaly_resolve() -> Dict[str, Any]:
     try:
         resolved = resolve_stale(session)
         return {"resolved": resolved}
+    finally:
+        session.close()
+
+
+@celery_app.task(name="linda_outcome_scan")
+def linda_outcome_scan() -> Dict[str, Any]:
+    """Resolve pending Ask LINDA action outcomes for every tenant.
+
+    Purely deterministic: each pending row is settled by looking at real
+    downstream state (an action item closing, an outreach member replying,
+    a step completing), never by asking a model whether Linda's suggestion
+    was good — that would be the coherence trap, not evidence. Rows that
+    resolve nothing before the horizon become ``no_signal``, which is
+    explicitly not counted against the proposal. See
+    ``backend.app.services.linda_outcomes``.
+    """
+    from backend.app.services.linda_outcomes import scan_all_tenants
+
+    session = _get_sync_session()
+    try:
+        return scan_all_tenants(session)
     finally:
         session.close()
 

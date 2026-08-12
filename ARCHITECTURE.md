@@ -173,6 +173,16 @@ be hardcoded outside the catalog (`tests/test_model_catalog.py` fails the build 
 | `llm_client.py` | Anthropic client construction plus `acreate_with_failover`: transient errors (429/5xx/timeout) retry on the **same** model; model-unavailable (deprecated/suspended/404) fails over once to the next cheaper tier. Also `compute_max_tokens`, the project-wide `max_tokens` policy — tier-aware defaults scaling with input length under a per-tier ceiling. |
 | `llm_telemetry.py` | Records every completion's usage to `llm_call_telemetry`; a nightly task aggregates per (call_site, tier) into `llm_ceiling_recommendation`, and `compute_max_tokens` consults those learned ceilings before the static caps. Fire-and-forget: a telemetry failure never fails a customer call. |
 
+**Ask LINDA outcome loop.** Every decided write proposal writes a
+`linda_action_outcomes` row (`services/linda_outcomes.py`) — confirmed, cancelled
+or expired — and the daily `linda_outcome_scan` beat task settles the pending ones
+from deterministic downstream state (an action item closing, an outreach member
+replying, a step completing). No LLM judges anything in this loop; a test asserts
+the module never imports the router. `no_signal` (nothing resolved inside the
+14-day horizon) is kept distinct from `failed`, and `acceptance_summary()` divides
+success only by *resolved* outcomes so recency doesn't depress a rate. This is the
+chat-side equivalent of the `insight_quality_scores` flywheel.
+
 **Ask LINDA context budget.** Chat tool results pass through
 `services/linda_context.py` before they enter the message history or the persisted
 transcript (which is replayed every later turn inside the 40-message window, so an

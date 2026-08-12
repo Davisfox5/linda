@@ -1,9 +1,9 @@
 # Ask LINDA — tool gaps and agent-graph gaps
 
-Status: **steps 1–5 of §4 implemented** (Tier 0 repairs, `resolve_entity`, the G2
-context seam, five Tier 1 reads, and `propose_step_dispatch` — this branch).
-Remaining: G5 outcome loop, then G4/G3. Tools still open: `get_scorecard`,
-`list_manager_alerts`, and the Tier 2 update/send verbs.
+Status: **steps 1–6 of §4 implemented** (Tier 0 repairs, `resolve_entity`, the G2
+context seam, five Tier 1 reads, `propose_step_dispatch`, and the G5 outcome
+loop — this branch). Remaining: G4 outbound turn and G3 job graph. Tools still
+open: `get_scorecard`, `list_manager_alerts`, and the Tier 2 update/send verbs.
 Date: 2026-08-12.
 Framework: [`agent-infrastructure-knowledge-base.md`](../../agent-infrastructure-knowledge-base.md)
 (harness → router → feedback loops), applied to the Ask LINDA chat surface
@@ -332,7 +332,31 @@ The outbound edge is what makes the system feel agentic rather than reactive, an
 it is the natural home for the subscription state deferred in
 [`campaign-monitoring.md`](campaign-monitoring.md) Phase 3.3.
 
-### G5 — outcome feedback: nothing measures whether Linda's actions worked
+### G5 — outcome feedback: nothing measures whether Linda's actions worked ✅ SHIPPED
+
+> **Done on this branch.** New `linda_action_outcomes` table (migration
+> `lo_001_linda_outcomes`, RLS-covered via the standard new-table checklist) plus
+> `services/linda_outcomes.py` and a daily `linda_outcome_scan` beat task.
+>
+> **The loop is grounded by construction.** Every verdict traces to a real row
+> changing — an action item closing, an outreach member replying, a step
+> completing. No model judges anything, and a test asserts the module never
+> imports the router or catalog: an LLM scoring whether its own suggestion was
+> good is the coherence trap this loop exists to avoid.
+>
+> **Cancels are now evidence.** They were discarded entirely; a cancel records
+> `decision=cancelled, outcome=rejected` immediately.
+>
+> **`no_signal` is kept distinct from failure**, in both the vocabulary and the
+> rate arithmetic: `success_rate` divides only by *resolved* outcomes, so pending
+> and no-signal rows don't drag a kind's score down simply for being recent.
+> Expiries are `no_signal` too — a user who never came back said nothing about
+> whether the proposal was good.
+>
+> `acceptance_summary()` is the first consumer: per-kind confirm rate and success
+> rate. A kind users routinely cancel is a tool-description or threshold problem,
+> which is exactly the signal that was missing.
+
 
 `WriteProposal` records `confirmed_at` and `resulting_entity_id`. Nothing ever
 looks at what happened next — did the bump email get a reply, did the CRM update
@@ -398,8 +422,7 @@ with Tier 1; the write edge should be async, off the response path.
    are held until tool-selection accuracy has been observed at 16 tools.
 5. ~~**T2.2 `propose_step_dispatch`**~~ — ✅ done on this branch, with
    `list_action_plans` alongside it (a write tool needs a read that returns its id).
-6. **G5 outcome loop** — start recording outcomes as soon as writes have effect,
-   so the flywheel has data before anyone tunes anything.
+6. ~~**G5 outcome loop**~~ — ✅ done on this branch; the flywheel now has data.
 7. **G4 outbound turn + G3 job graph** — the genuinely new infrastructure; do it
    last, on top of a tool surface that has been measured.
 
