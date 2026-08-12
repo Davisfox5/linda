@@ -316,6 +316,115 @@ async def cancel_proposal(
 # ── Proposal executor ──────────────────────────────────────────────────────
 
 
+async def _execute_crm_update(
+    db: AsyncSession, payload: Dict[str, Any], tenant: Tenant
+) -> Optional[str]:
+    """Really run a confirmed ``crm_update`` proposal against the CRM.
+
+    Reuses the exact write path ``action_plan/dispatch.dispatch_step_commit``
+    uses for ``system_write`` steps — provider selection, adapter load with
+    token decrypt/refresh, then ``execute_operation`` — so chat writes and
+    action-plan writes cannot drift apart. Returns the provider's id for
+    the created record, when the adapter reports one.
+
+    This previously returned ``None`` without doing anything, so the user
+    got a Confirm button that silently did nothing.
+    """
+    from backend.app.models import Contact, Customer, Interaction
+    from backend.app.services.crm.base import CrmCapabilityMissing, CrmError
+    from backend.app.services.crm.writeback import (
+        _load_writeback_adapter,
+        _pick_provider_for_writeback,
+    )
+
+    operation = str(payload.get("operation") or "").strip()
+    if not operation:
+        # Pre-repair proposals used a {target, fields} shape no adapter
+        # could execute. They can still be pending (24h TTL), so fail them
+        # with an explanation rather than pretending they worked.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "This CRM proposal predates the current format and can't be "
+                "executed. Ask Linda to propose the change again."
+            ),
+        )
+
+    op_payload = payload.get("payload")
+    if not isinstance(op_payload, dict):
+        op_payload = {}
+
+    try:
+        interaction_uuid = uuid.UUID(str(payload.get("interaction_id")))
+    except (ValueError, TypeError):
+        raise HTTPException(
+            status_code=422, detail="crm_update proposal requires an interaction_id"
+        )
+
+    interaction = (
+        await db.execute(
+            select(Interaction).where(
+                Interaction.id == interaction_uuid,
+                Interaction.tenant_id == tenant.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if interaction is None:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+
+    provider = await _pick_provider_for_writeback(db, tenant, interaction)
+    if provider is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "No CRM integration connected. Connect HubSpot, Salesforce, "
+                "or Pipedrive under Settings."
+            ),
+        )
+    adapter = await _load_writeback_adapter(db, tenant.id, provider)
+    if adapter is None:
+        raise HTTPException(
+            status_code=409, detail="Failed to instantiate the %s CRM adapter." % provider
+        )
+
+    contact_external_id: Optional[str] = None
+    customer_external_id: Optional[str] = None
+    if interaction.contact_id is not None:
+        contact = await db.get(Contact, interaction.contact_id)
+        if contact is not None:
+            contact_external_id = contact.crm_id
+            if contact.customer_id is not None:
+                customer = await db.get(Customer, contact.customer_id)
+                if customer is not None:
+                    customer_external_id = customer.crm_id
+
+    try:
+        external_id = await adapter.execute_operation(
+            operation=operation,
+            payload=op_payload,
+            contact_external_id=op_payload.get("contact_external_id")
+            or contact_external_id,
+            customer_external_id=op_payload.get("customer_external_id")
+            or customer_external_id,
+            deal_external_id=op_payload.get("deal_external_id"),
+        )
+    except CrmCapabilityMissing as exc:
+        raise HTTPException(status_code=422, detail=str(exc)[:500])
+    except CrmError as exc:
+        logger.warning("crm_update proposal failed on %s: %s", provider, exc)
+        raise HTTPException(status_code=502, detail=str(exc)[:500])
+    except Exception as exc:  # noqa: BLE001 — surfaced, never silently swallowed
+        logger.exception("crm_update proposal failed")
+        raise HTTPException(status_code=502, detail=str(exc)[:500])
+    finally:
+        try:
+            await adapter.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("CRM adapter close failed", exc_info=True)
+
+    return str(external_id) if external_id else None
+
+
 async def _execute_proposal(
     db: AsyncSession, proposal: WriteProposal, tenant: Tenant
 ) -> Optional[uuid.UUID]:
@@ -358,7 +467,11 @@ async def _execute_proposal(
             description=payload.get("description"),
             priority=payload.get("priority", "medium"),
             due_date=due,
-            status="pending",
+            # Canonical enum is {open, done, dismissed} (api/action_items.py).
+            # This used to write "pending", which the list endpoint's
+            # status=open filter does not match — Linda-created items were
+            # invisible in the SPA's Open view.
+            status="open",
         )
         db.add(item)
         await db.flush()
@@ -384,7 +497,7 @@ async def _execute_proposal(
             title=payload.get("subject") or "Follow-up email",
             description="Email draft proposed by Linda.",
             priority="medium",
-            status="pending",
+            status="open",
             email_draft={
                 "subject": payload.get("subject"),
                 "body": payload.get("body"),
@@ -396,9 +509,13 @@ async def _execute_proposal(
         return item.id
 
     if proposal.kind == "crm_update":
-        # CRM push is wired via the Integration service; executing here would
-        # require per-tenant credentials. Record the confirmed payload on the
-        # proposal and return — the scheduler/Celery worker can pick it up.
+        external_id = await _execute_crm_update(db, payload, tenant)
+        # Record what the write produced so the confirmed proposal is an
+        # audit record rather than just a flag. Reassigning (rather than
+        # mutating) the JSONB dict is what makes SQLAlchemy persist it.
+        proposal.payload = dict(payload, crm_external_id=external_id)
+        # The CRM's id is a provider string, not a LINDA UUID, so there is
+        # no resulting_entity_id to return.
         return None
 
     if proposal.kind == "queue_bump_email":

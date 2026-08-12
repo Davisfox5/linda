@@ -1,6 +1,7 @@
 # Ask LINDA — tool gaps and agent-graph gaps
 
-Status: analysis / design proposal. No code changes in this document.
+Status: **steps 1–2 of §4 implemented** (Tier 0 repairs + `resolve_entity`, this
+branch); everything else is still proposal.
 Date: 2026-08-12.
 Framework: [`agent-infrastructure-knowledge-base.md`](../../agent-infrastructure-knowledge-base.md)
 (harness → router → feedback loops), applied to the Ask LINDA chat surface
@@ -42,7 +43,16 @@ model seam is exactly what the catalog rule exists to prevent.
 
 ## Part 1 — Tools
 
-### Tier 0 — three shipped tools that cannot complete (fix before adding any new ones)
+### Tier 0 — three shipped tools that cannot complete ✅ FIXED
+
+> **Done on this branch.** `propose_crm_update` now executes through the CRM
+> writeback adapters on confirm (`api/chat.py::_execute_crm_update`) and its schema
+> was reshaped from the unexecutable `{target, fields}` to `{interaction_id,
+> operation, payload}` matching `CrmAdapter.execute_operation`; `propose_action_item`
+> and `propose_email_draft` now require `interaction_id` in-schema; `resolve_entity`
+> (T1.1) makes `propose_queue_bump_email` reachable. A fourth bug surfaced while
+> fixing these — see the status-vocabulary note at the end of this section.
+
 
 These are not "missing capability", they are **broken promises**: the model calls
 them, the UI shows a proposal card, the user clicks Confirm, and nothing (or an
@@ -85,11 +95,24 @@ name into an id** — no "Acme Corp" → customer, no "Dana" → user, no "the p
 thread" → contact. The agent therefore cannot chain: it can find a call, but it
 cannot act on the *person* the call was with.
 
-**T1.1 — `resolve_entity` (highest-leverage single tool in this document).**
+**T1.1 — `resolve_entity` (highest-leverage single tool in this document). ✅ SHIPPED**
 Name / email / domain fragment → candidate `{kind, id, display_name, confidence}`
-rows across `Customer`, `Contact`, `User`, and prospects. The matching logic
-already exists in `services/entity_resolution.py`; this is an exposure, not new
-inference. It unblocks T0.3 immediately and every Tier-2 write below.
+rows across `Customer`, `Contact`, and `User`, with a customer's
+`pipeline_status` / `do_not_contact` carried inline so the model doesn't propose a
+bump the confirm endpoint will 409. Implemented as deterministic SQL in
+`services/linda_entity_lookup.py` — it is a lookup over rows that already exist,
+not inference; the fuzzy model-driven resolution stays in `entity_resolution.py`
+where the pipeline uses it. It unblocks T0.3 and every Tier-2 write below.
+
+**Bug found while fixing Tier 0 — action-item status vocabulary. ✅ FIXED**
+`ActionItem.status` is canonically `{open, done, dismissed}`
+(`api/action_items.py:168-172`), but the chat executor created items with
+`status="pending"` and the `get_action_items` tool advertised
+`pending/in_progress/completed`. `list_action_items(status="open")` expands to
+exactly `["open"]`, so **every action item Linda ever created was invisible in the
+SPA's Open filter**, and asking Linda for "completed" items always returned zero
+rows. Chat now writes `open` and the tool normalizes legacy spellings on read
+(matching all of them in the `open` bucket, so pre-existing rows resurface).
 
 ### Tier 1 — reads the product already promises but cannot deliver
 
@@ -300,8 +323,8 @@ with Tier 1; the write edge should be async, off the response path.
 
 ## 4. Suggested sequence
 
-1. **Tier 0 repairs** (T0.1–T0.3) — stop shipping confirm buttons that don't work.
-2. **T1.1 `resolve_entity`** — the join key; unblocks every write tool.
+1. ~~**Tier 0 repairs** (T0.1–T0.3)~~ — ✅ done on this branch.
+2. ~~**T1.1 `resolve_entity`**~~ — ✅ done on this branch.
 3. **G2 retrieval subgraph** — build the context-isolation seam *before* the wide
    reads land, not after rot shows up.
 4. **Tier 1 reads**, prioritised `get_customer_360` → `search_knowledge_base` →

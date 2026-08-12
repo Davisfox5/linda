@@ -140,6 +140,9 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
     assert names == READ_TOOLS | DRAFT_TOOLS
     assert READ_TOOLS == {
         "search_interactions",
+        # Name/email/domain → ids. Every write tool is keyed on an id, so
+        # this is the bridge from how users talk to what tools take.
+        "resolve_entity",
         "get_action_items",
         "get_interaction_detail",
         # Live read of the user's connected Gmail SENT folder (search_sent_email).
@@ -164,6 +167,33 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
     }
     for tool in TOOLS:
         assert tool["input_schema"]["type"] == "object"
+
+
+def test_write_tool_schemas_require_what_their_executors_require():
+    """A draft tool whose schema is looser than its confirm executor produces
+    proposal cards that 422 on Confirm. These three executors hard-require
+    ``interaction_id`` (api/chat.py), so the schemas must too."""
+    from backend.app.services.linda_agent import TOOLS
+
+    by_name = {t["name"]: t for t in TOOLS}
+    for name in ("propose_action_item", "propose_email_draft", "propose_crm_update"):
+        required = by_name[name]["input_schema"]["required"]
+        assert "interaction_id" in required, name
+
+    # crm_update must name an operation the CRM adapters can actually run;
+    # the old {target, fields} shape had no executable meaning.
+    crm_schema = by_name["propose_crm_update"]["input_schema"]
+    assert set(crm_schema["required"]) == {"interaction_id", "operation", "payload"}
+    assert set(crm_schema["properties"]["operation"]["enum"]) == {
+        "create_note",
+        "create_task",
+        "create_activity",
+        "update_deal_stage",
+    }
+
+    # propose_action_plan is the standalone path — it must NOT require an
+    # interaction, or there's no way to make a follow-up unrelated to a call.
+    assert "interaction_id" not in by_name["propose_action_plan"]["input_schema"]["required"]
 
 
 # ── search_sent_email (live Gmail read) ────────────────────────────────────
@@ -314,6 +344,195 @@ def test_propose_action_item_creates_pending_proposal():
     assert wp.kind == "action_item"
     assert wp.status == "pending"
     assert wp.expires_at > datetime.now(timezone.utc)
+
+
+# ── resolve_entity (name/email/domain → ids) ───────────────────────────────
+
+
+async def _seed_entities(session, tenant):
+    from backend.app.models import Contact, Customer, User
+
+    customer = Customer(
+        tenant_id=tenant.id, name="Acme Corporation", domain="acme.com",
+        pipeline_status="contacted", do_not_contact=False,
+    )
+    blocked = Customer(
+        tenant_id=tenant.id, name="Acme Holdings", domain="acmeholdings.com",
+        pipeline_status="do_not_contact", do_not_contact=True,
+    )
+    unrelated = Customer(tenant_id=tenant.id, name="Globex", domain="globex.io")
+    session.add_all([customer, blocked, unrelated])
+    await session.commit()
+    await session.refresh(customer)
+
+    contact = Contact(
+        tenant_id=tenant.id, name="Dana Reyes", email="dana@acme.com",
+        customer_id=customer.id, role="champion", interaction_count=4,
+    )
+    teammate = User(tenant_id=tenant.id, email="sarah@ourco.com", name="Sarah Lin", role="manager")
+    session.add_all([contact, teammate])
+    await session.commit()
+    return customer, blocked, contact, teammate
+
+
+@pytest.mark.asyncio
+async def test_resolve_entity_finds_customer_by_name_with_outreach_state(
+    test_session, test_tenant
+):
+    from backend.app.services.linda_agent import dispatch_tool
+
+    customer, blocked, _, _ = await _seed_entities(test_session, test_tenant)
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    result = await dispatch_tool(ctx, "resolve_entity", {"query": "Acme", "kinds": ["customer"]})
+
+    ids = {c["id"] for c in result["candidates"]}
+    assert ids == {str(customer.id), str(blocked.id)}
+    assert "Globex" not in {c["display_name"] for c in result["candidates"]}
+    # The prospect_id propose_queue_bump_email wants IS the customer id, and
+    # the model needs do_not_contact up front — the confirm endpoint 409s on
+    # a blocked prospect, so proposing one is a wasted turn.
+    by_id = {c["id"]: c for c in result["candidates"]}
+    assert by_id[str(customer.id)]["is_prospect"] is True
+    assert by_id[str(customer.id)]["do_not_contact"] is False
+    assert by_id[str(blocked.id)]["do_not_contact"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_entity_exact_email_outranks_partial_name(test_session, test_tenant):
+    from backend.app.services.linda_agent import dispatch_tool
+
+    customer, _, contact, _ = await _seed_entities(test_session, test_tenant)
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    result = await dispatch_tool(ctx, "resolve_entity", {"query": "dana@acme.com"})
+
+    top = result["candidates"][0]
+    assert top["kind"] == "contact"
+    assert top["id"] == str(contact.id)
+    assert top["match"] == "exact_email"
+    assert top["confidence"] == 1.0
+    # The parent account comes back on the contact so the model doesn't need
+    # a second lookup to know which customer Dana belongs to.
+    assert top["customer_id"] == str(customer.id)
+    assert top["customer_name"] == "Acme Corporation"
+
+
+@pytest.mark.asyncio
+async def test_resolve_entity_returns_teammate_email_for_assignment(
+    test_session, test_tenant
+):
+    from backend.app.services.linda_agent import dispatch_tool
+
+    _, _, _, teammate = await _seed_entities(test_session, test_tenant)
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    result = await dispatch_tool(ctx, "resolve_entity", {"query": "Sarah", "kinds": ["user"]})
+
+    assert len(result["candidates"]) == 1
+    # assignee_email is what the action-item/plan tools take.
+    assert result["candidates"][0]["email"] == "sarah@ourco.com"
+    assert result["candidates"][0]["role"] == "manager"
+
+
+@pytest.mark.asyncio
+async def test_resolve_entity_is_tenant_scoped(test_session_factory, test_tenant):
+    from backend.app.models import Customer, Tenant
+    from backend.app.services.linda_agent import dispatch_tool
+
+    async with test_session_factory() as session:
+        other = Tenant(name="Other Co", slug="other-%s" % uuid.uuid4().hex[:6])
+        session.add(other)
+        await session.commit()
+        await session.refresh(other)
+        session.add(Customer(tenant_id=other.id, name="Acme Corporation", domain="acme.com"))
+        await session.commit()
+
+    async with test_session_factory() as session:
+        ctx = _ctx(session, tenant=test_tenant)
+        result = await dispatch_tool(ctx, "resolve_entity", {"query": "Acme"})
+
+    assert result["candidates"] == []
+
+
+@pytest.mark.asyncio
+async def test_resolve_entity_empty_query_returns_no_candidates(test_session, test_tenant):
+    from backend.app.services.linda_agent import dispatch_tool
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    assert (await dispatch_tool(ctx, "resolve_entity", {"query": "   "}))["candidates"] == []
+
+
+def test_resolve_entity_bad_kinds_widen_rather_than_silently_empty():
+    """An unrecognized ``kinds`` filter must not turn into "search nothing"."""
+    from backend.app.services.linda_entity_lookup import VALID_KINDS, normalize_kinds
+
+    assert normalize_kinds(None) == list(VALID_KINDS)
+    assert normalize_kinds(["nonsense"]) == list(VALID_KINDS)
+    assert normalize_kinds("customer") == ["customer"]
+    assert normalize_kinds(["user", "customer"]) == ["customer", "user"]
+
+
+# ── action-item status vocabulary ──────────────────────────────────────────
+
+
+def test_get_action_items_normalizes_legacy_status_spellings():
+    """ActionItem.status is canonically {open, done, dismissed}. A raw
+    ``status == "completed"`` filter matches nothing, so the tool has to
+    normalize before querying."""
+    from backend.app.services.linda_agent import _canonical_status
+
+    assert _canonical_status("completed") == "done"
+    assert _canonical_status("pending") == "open"
+    assert _canonical_status("in_progress") == "open"
+    assert _canonical_status("rejected") == "dismissed"
+    assert _canonical_status("OPEN") == "open"
+    assert _canonical_status("nonsense") is None
+    assert _canonical_status(None) is None
+
+
+@pytest.mark.asyncio
+async def test_get_action_items_open_filter_matches_legacy_rows(test_session, test_tenant):
+    """Rows written before the enum was simplified (and by Linda itself,
+    before this fix) carry "pending" — the open bucket must still find them."""
+    from backend.app.models import ActionItem, Interaction
+    from backend.app.services.linda_agent import dispatch_tool
+
+    interaction = Interaction(tenant_id=test_tenant.id, channel="voice")
+    test_session.add(interaction)
+    await test_session.commit()
+    await test_session.refresh(interaction)
+
+    test_session.add_all([
+        ActionItem(tenant_id=test_tenant.id, interaction_id=interaction.id,
+                   title="legacy pending", status="pending"),
+        ActionItem(tenant_id=test_tenant.id, interaction_id=interaction.id,
+                   title="canonical open", status="open"),
+        ActionItem(tenant_id=test_tenant.id, interaction_id=interaction.id,
+                   title="finished", status="done"),
+    ])
+    await test_session.commit()
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    open_items = await dispatch_tool(ctx, "get_action_items", {"status": "open"})
+    assert {i["title"] for i in open_items["action_items"]} == {
+        "legacy pending", "canonical open",
+    }
+
+    # "completed" is a legacy spelling of done — it must not return zero rows.
+    done_items = await dispatch_tool(ctx, "get_action_items", {"status": "completed"})
+    assert {i["title"] for i in done_items["action_items"]} == {"finished"}
+
+
+@pytest.mark.asyncio
+async def test_get_action_items_unknown_status_reports_the_valid_set(
+    test_session, test_tenant
+):
+    from backend.app.services.linda_agent import dispatch_tool
+
+    ctx = _ctx(test_session, tenant=test_tenant)
+    result = await dispatch_tool(ctx, "get_action_items", {"status": "banana"})
+    assert "open, done, or dismissed" in result["error"]
 
 
 def test_unknown_tool_returns_error():
@@ -778,6 +997,136 @@ def test_confirm_pending_action_item_creates_row_and_marks_confirmed():
     kinds = [type(o).__name__ for o in session.added]
     assert "ActionItem" in kinds
     assert session.committed is True
+    # Canonical status — "pending" is not in the {open, done, dismissed}
+    # enum, and the REST list filter for status=open would not match it, so
+    # the item would be invisible in the SPA.
+    item = next(o for o in session.added if type(o).__name__ == "ActionItem")
+    assert item.status == "open"
+
+
+# ── crm_update: confirm must really write, or clearly refuse ───────────────
+
+
+def _crm_payload(**over):
+    payload = {
+        "interaction_id": str(uuid.uuid4()),
+        "operation": "create_note",
+        "payload": {"body": "Talked pricing; sending the enterprise quote."},
+    }
+    payload.update(over)
+    return payload
+
+
+def test_crm_update_legacy_shape_is_refused_not_silently_confirmed():
+    """Proposals created before the repair used {target, fields}, which no
+    adapter can execute. They must fail loudly rather than confirm to a
+    no-op the way the old executor did."""
+    from backend.app.api import chat as chat_module
+    from fastapi import HTTPException
+
+    tenant = _tenant()
+    legacy = {"target": "salesforce.Opportunity", "fields": {"Stage": "Closed Won"}}
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(chat_module._execute_crm_update(_FakeSession(), legacy, tenant))
+    assert exc.value.status_code == 422
+    assert "propose the change again" in exc.value.detail
+
+
+def test_crm_update_without_interaction_is_refused():
+    from backend.app.api import chat as chat_module
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(
+            chat_module._execute_crm_update(
+                _FakeSession(), _crm_payload(interaction_id="not-a-uuid"), _tenant()
+            )
+        )
+    assert exc.value.status_code == 422
+
+
+def test_crm_update_with_no_connected_crm_returns_409():
+    from backend.app.api import chat as chat_module
+    from fastapi import HTTPException
+
+    interaction = SimpleNamespace(id=uuid.uuid4(), contact_id=None)
+    session = _FakeSession(scripted=[_ScalarResult(interaction)])
+
+    with patch(
+        "backend.app.services.crm.writeback._pick_provider_for_writeback",
+        new=AsyncMock(return_value=None),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                chat_module._execute_crm_update(session, _crm_payload(), _tenant())
+            )
+    assert exc.value.status_code == 409
+    assert "No CRM integration connected" in exc.value.detail
+
+
+def test_crm_update_executes_operation_and_records_external_id():
+    from backend.app.api import chat as chat_module
+
+    interaction = SimpleNamespace(id=uuid.uuid4(), contact_id=None)
+    session = _FakeSession(scripted=[_ScalarResult(interaction)])
+    adapter = SimpleNamespace(
+        execute_operation=AsyncMock(return_value="hs-note-991"),
+        close=AsyncMock(),
+    )
+
+    with patch(
+        "backend.app.services.crm.writeback._pick_provider_for_writeback",
+        new=AsyncMock(return_value="hubspot"),
+    ), patch(
+        "backend.app.services.crm.writeback._load_writeback_adapter",
+        new=AsyncMock(return_value=adapter),
+    ):
+        external_id = asyncio.run(
+            chat_module._execute_crm_update(session, _crm_payload(), _tenant())
+        )
+
+    assert external_id == "hs-note-991"
+    kwargs = adapter.execute_operation.call_args.kwargs
+    assert kwargs["operation"] == "create_note"
+    assert kwargs["payload"]["body"].startswith("Talked pricing")
+    adapter.close.assert_awaited()
+
+
+def test_crm_update_capability_missing_surfaces_as_422():
+    """Unknown operations raise CrmCapabilityMissing in the adapter. That's a
+    "this provider can't do that" answer, not a server fault."""
+    from backend.app.api import chat as chat_module
+    from backend.app.services.crm.base import CrmCapabilityMissing
+    from fastapi import HTTPException
+
+    interaction = SimpleNamespace(id=uuid.uuid4(), contact_id=None)
+    session = _FakeSession(scripted=[_ScalarResult(interaction)])
+    adapter = SimpleNamespace(
+        execute_operation=AsyncMock(
+            side_effect=CrmCapabilityMissing("hubspot cannot update deal stages")
+        ),
+        close=AsyncMock(),
+    )
+
+    with patch(
+        "backend.app.services.crm.writeback._pick_provider_for_writeback",
+        new=AsyncMock(return_value="hubspot"),
+    ), patch(
+        "backend.app.services.crm.writeback._load_writeback_adapter",
+        new=AsyncMock(return_value=adapter),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                chat_module._execute_crm_update(
+                    session, _crm_payload(operation="update_deal_stage"), _tenant()
+                )
+            )
+
+    assert exc.value.status_code == 422
+    assert "deal stages" in exc.value.detail
+    # The adapter is closed even on the failure path.
+    adapter.close.assert_awaited()
 
 
 def test_cancel_pending_proposal_marks_cancelled():

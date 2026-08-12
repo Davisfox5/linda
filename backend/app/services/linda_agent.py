@@ -31,7 +31,7 @@ from backend.app.models import (
     User,
     WriteProposal,
 )
-from backend.app.services import campaign_stats
+from backend.app.services import campaign_stats, linda_entity_lookup
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.model_router import (
     CacheableBlock,
@@ -42,11 +42,8 @@ from backend.app.services.model_router import (
 )
 from backend.app.services.search_service import SearchService
 
-from backend.app.services import model_catalog
-
 logger = logging.getLogger(__name__)
 
-LINDA_MODEL = model_catalog.SONNET
 MAX_TOKENS = 2048
 PROPOSAL_TTL = timedelta(hours=24)
 
@@ -115,7 +112,31 @@ PRODUCT_KNOWLEDGE = (
     "Explain the external-vs-outreach distinction when it's relevant to the "
     "answer (e.g. outreach campaigns have a member funnel and daily send "
     "quota; external ones don't). Only tell the user there are no campaigns "
-    "after list_campaigns actually returns an empty list."
+    "after list_campaigns actually returns an empty list.\n\n"
+    "## Names vs ids — how to act on a person or company\n"
+    "Users talk in names (\"Acme\", \"Dana\", \"the pricing thread\"); every "
+    "write tool takes an id. Bridge the two with resolve_entity BEFORE "
+    "proposing anything about a named person or company. It returns "
+    "customers (whose id is the prospect_id for propose_queue_bump_email), "
+    "contacts, and teammates (whose email is the assignee_email for action "
+    "items and plans). When it returns several plausible candidates, ask "
+    "the user which one — do not pick for them. When it returns nothing, "
+    "say so plainly instead of inventing an id; an id you did not get from "
+    "a tool is always wrong.\n\n"
+    "## What each write tool actually does on confirm\n"
+    "Be accurate about this — never overstate a write.\n"
+    "- propose_action_item / propose_email_draft: both need an "
+    "interaction_id, so find the call or email first with "
+    "search_interactions. An email draft is STAGED for the user to send, "
+    "not sent.\n"
+    "- propose_action_plan: the right tool for a standalone follow-up with "
+    "no related conversation — it's the only one that doesn't need an "
+    "interaction.\n"
+    "- propose_crm_update: really writes to the connected CRM on confirm. "
+    "Say exactly which operation you're proposing and to which record.\n"
+    "- propose_queue_bump_email: queues a send for the campaign scheduler; "
+    "it goes out inside the campaign's window and daily throttle, not "
+    "immediately."
 )
 
 
@@ -161,12 +182,57 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "get_action_items",
-        "description": "List open action items for the tenant. Filter by status, assignee, or due-before.",
+        "name": "resolve_entity",
+        "description": (
+            "Turn a name, email address, or company domain into the ids "
+            "other tools need. Search this FIRST whenever the user names a "
+            "person or company — \"Acme\", \"Dana\", \"dana@acme.com\" — "
+            "because every write tool is keyed on an id, not a name. "
+            "Returns candidates across three kinds: 'customer' (an account "
+            "or an outreach prospect — its id is what propose_queue_bump_email "
+            "wants as prospect_id), 'contact' (a person at a customer), and "
+            "'user' (a teammate on this tenant — use its email for "
+            "assignee_email). Each candidate carries a confidence and the "
+            "reason it matched; if several look plausible, ask the user "
+            "which one rather than guessing. Customer rows also report "
+            "pipeline_status and do_not_contact — never propose outreach to "
+            "a prospect whose do_not_contact is true."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "status": {"type": "string", "description": "Filter by status (pending, in_progress, completed)."},
+                "query": {
+                    "type": "string",
+                    "description": "Name, email address, or domain to look up.",
+                },
+                "kinds": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["customer", "contact", "user"],
+                    },
+                    "description": "Optional filter. Omit to search all three.",
+                },
+                "limit": {"type": "integer", "description": "Max candidates (default 8, max 25)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_action_items",
+        "description": (
+            "List action items for the tenant. Filter by status, assignee, "
+            "or due-before. Statuses are 'open', 'done', and 'dismissed' "
+            "— 'open' covers anything not yet finished."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "done", "dismissed"],
+                    "description": "Filter by status.",
+                },
                 "assignee_email": {"type": "string", "description": "Filter by assignee email."},
                 "due_before": {"type": "string", "description": "ISO date — only items due before this date."},
                 "limit": {"type": "integer", "description": "Max results (default 20)."},
@@ -276,32 +342,53 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "propose_action_item",
-        "description": "Propose creating a new action item. Returns a proposal preview; the user confirms from the UI.",
+        "description": (
+            "Propose a follow-up task attached to a specific call or email. "
+            "Returns a proposal preview; the user confirms from the UI. "
+            "``interaction_id`` is REQUIRED — an action item always hangs off "
+            "an interaction. For a standalone follow-up that isn't tied to a "
+            "conversation, use propose_action_plan instead, which supports "
+            "one. Find the interaction with search_interactions first if you "
+            "don't already have its id."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "interaction_id": {"type": "string", "description": "Related interaction UUID, if any."},
+                "interaction_id": {
+                    "type": "string",
+                    "description": "Related interaction UUID. Required.",
+                },
                 "title": {"type": "string"},
                 "description": {"type": "string"},
                 "assignee_email": {"type": "string"},
                 "due_date": {"type": "string", "description": "ISO date."},
                 "priority": {"type": "string", "description": "high | medium | low"},
             },
-            "required": ["title"],
+            "required": ["interaction_id", "title"],
         },
     },
     {
         "name": "propose_email_draft",
-        "description": "Propose a follow-up email draft. Returns a proposal preview with subject and body.",
+        "description": (
+            "Propose a follow-up email draft for a specific call or email. "
+            "Returns a proposal preview with subject and body. On confirm the "
+            "draft is staged on a new action item for the user to review and "
+            "send — it is NOT sent automatically, so don't tell the user it "
+            "went out. ``interaction_id`` is REQUIRED; find it with "
+            "search_interactions first if you don't have it."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "interaction_id": {"type": "string"},
+                "interaction_id": {
+                    "type": "string",
+                    "description": "Related interaction UUID. Required.",
+                },
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
                 "recipients": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["subject", "body", "recipients"],
+            "required": ["interaction_id", "subject", "body", "recipients"],
         },
     },
     {
@@ -336,15 +423,42 @@ TOOLS: List[Dict[str, Any]] = [
     },
     {
         "name": "propose_crm_update",
-        "description": "Propose a CRM update (Salesforce/HubSpot). Returns a proposal preview with the target object and fields.",
+        "description": (
+            "Propose writing something to the tenant's connected CRM "
+            "(HubSpot / Salesforce / Pipedrive). On confirm this really "
+            "executes against the CRM, so be precise about what you're "
+            "proposing before you call it. The CRM is chosen automatically "
+            "from the interaction's contact/account. Supported operations "
+            "are exactly: 'create_note' (log a note — payload needs "
+            "{body}), 'create_task' / 'create_activity' (payload takes "
+            "{subject, note, due_date}), and 'update_deal_stage' (payload "
+            "needs {deal_external_id, stage_external_id}). Anything else "
+            "will be refused by the adapter. ``interaction_id`` is REQUIRED "
+            "— it's how the CRM record to attach to is resolved."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "interaction_id": {"type": "string"},
-                "target": {"type": "string", "description": "Target object, e.g. 'salesforce.Opportunity' or 'hubspot.Deal'."},
-                "fields": {"type": "object", "description": "Field-name → new-value map."},
+                "interaction_id": {
+                    "type": "string",
+                    "description": "Interaction UUID whose contact/account the write attaches to. Required.",
+                },
+                "operation": {
+                    "type": "string",
+                    "enum": [
+                        "create_note",
+                        "create_task",
+                        "create_activity",
+                        "update_deal_stage",
+                    ],
+                    "description": "Which CRM operation to run.",
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "Operation arguments — see the tool description for the fields each operation takes.",
+                },
             },
-            "required": ["target", "fields"],
+            "required": ["interaction_id", "operation", "payload"],
         },
     },
     {
@@ -393,6 +507,7 @@ TOOLS: List[Dict[str, Any]] = [
 
 READ_TOOLS = {
     "search_interactions",
+    "resolve_entity",
     "get_action_items",
     "get_interaction_detail",
     "search_sent_email",
@@ -446,10 +561,65 @@ async def _exec_search_interactions(ctx: AgentContext, args: Dict[str, Any]) -> 
     return {"results": results}
 
 
+async def _exec_resolve_entity(ctx: AgentContext, args: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        candidates = await linda_entity_lookup.resolve_entity(
+            db=ctx.db,
+            tenant=ctx.tenant,
+            query=str(args.get("query") or ""),
+            kinds=args.get("kinds"),
+            limit=args.get("limit", 8),
+        )
+    except Exception as exc:
+        logger.exception("resolve_entity failed")
+        return {"error": "entity lookup failed: %s" % exc}
+    return {"query": args.get("query"), "count": len(candidates), "candidates": candidates}
+
+
+# ActionItem.status is canonically {open, done, dismissed} (see the enum
+# note in backend/app/api/action_items.py). The REST router tolerates the
+# legacy spellings; this tool's executor must too, because a long-lived
+# conversation — or a stale tool description — can still send them, and a
+# raw `status == "completed"` filter silently returns zero rows.
+_STATUS_ALIASES = {
+    "pending": "open",
+    "in_progress": "open",
+    "snoozed": "open",
+    "completed": "done",
+    "rejected": "dismissed",
+}
+
+
+def _canonical_status(value: Any) -> Optional[str]:
+    """Map any status spelling to {open, done, dismissed}, else None."""
+    if not value:
+        return None
+    v = str(value).lower().strip()
+    if v in ("open", "done", "dismissed"):
+        return v
+    return _STATUS_ALIASES.get(v)
+
+
 async def _exec_get_action_items(ctx: AgentContext, args: Dict[str, Any]) -> Dict[str, Any]:
     stmt = select(ActionItem).where(ActionItem.tenant_id == ctx.tenant.id)
     if args.get("status"):
-        stmt = stmt.where(ActionItem.status == args["status"])
+        status = _canonical_status(args["status"])
+        if status is None:
+            return {
+                "error": "unknown status %r — use open, done, or dismissed"
+                % args["status"]
+            }
+        # Rows created before the status enum was simplified (and by Linda
+        # itself, prior to this fix) carry the legacy spellings, so the
+        # "open" bucket has to match all of them or those items vanish.
+        if status == "open":
+            stmt = stmt.where(
+                ActionItem.status.in_(("open", "pending", "in_progress"))
+            )
+        elif status == "done":
+            stmt = stmt.where(ActionItem.status.in_(("done", "completed")))
+        else:
+            stmt = stmt.where(ActionItem.status.in_(("dismissed", "rejected")))
     if args.get("due_before"):
         stmt = stmt.where(ActionItem.due_date <= date.fromisoformat(args["due_before"]))
     if args.get("assignee_email"):
@@ -772,6 +942,8 @@ async def dispatch_tool(
     """Execute a tool by name. Read tools run; draft tools create WriteProposal rows."""
     if name == "search_interactions":
         return await _exec_search_interactions(ctx, args)
+    if name == "resolve_entity":
+        return await _exec_resolve_entity(ctx, args)
     if name == "get_action_items":
         return await _exec_get_action_items(ctx, args)
     if name == "get_interaction_detail":
