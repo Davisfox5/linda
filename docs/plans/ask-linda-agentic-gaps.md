@@ -1,7 +1,8 @@
 # Ask LINDA — tool gaps and agent-graph gaps
 
-Status: **steps 1–3 of §4 implemented** (Tier 0 repairs, `resolve_entity`, and the
-G2 context seam — this branch); everything else is still proposal.
+Status: **steps 1–4 of §4 implemented** (Tier 0 repairs, `resolve_entity`, the G2
+context seam, and four of the seven Tier 1 reads — this branch); everything else
+is still proposal.
 Date: 2026-08-12.
 Framework: [`agent-infrastructure-knowledge-base.md`](../../agent-infrastructure-knowledge-base.md)
 (harness → router → feedback loops), applied to the Ask LINDA chat surface
@@ -116,6 +117,27 @@ rows. Chat now writes `open` and the tool normalizes legacy spellings on read
 
 ### Tier 1 — reads the product already promises but cannot deliver
 
+> **Four shipped on this branch** (`services/linda_reads.py`): `get_customer_360`,
+> `search_knowledge_base`, `get_profile`, `get_team_metrics`. `get_scorecard`,
+> `list_manager_alerts` and `get_action_plan` (T1.4, T1.7, T1.8) remain open —
+> held back deliberately so tool-selection accuracy can be observed before the
+> registry grows again.
+>
+> **Correction to §3 below.** This document originally said an API-key caller
+> (`AgentContext.user is None`) should be denied on `get_profile`, "deny is the
+> safe default". That was wrong: `auth.py:512` documents API keys as programmatic
+> tenant-wide credentials and builds their principal with `role="admin"`. Denying
+> in chat would refuse the very same key that can `GET /api/v1/profiles/business`
+> directly — friction with no security gain. The implementation matches `auth.py`,
+> and `build_principal` carries the reasoning.
+>
+> `get_profile` runs the **same** `_authorize_*` gates as `api/profiles.py`
+> (imported, not restated) and `get_team_metrics` delegates to the analytics
+> dashboard endpoint, so a chat answer and the SPA cannot quote different numbers.
+> Denials use one message for "not allowed" and "doesn't exist" so the tool isn't
+> an existence oracle.
+
+
 `PRODUCT_KNOWLEDGE` (`linda_agent.py:79-119`) tells the model that Scorecards,
 Snippets, Live Coaching, Integrations and Webhooks are core surfaces. There is no
 tool for any of them. The prompt advertises a product the tool registry does not
@@ -125,11 +147,11 @@ hallucinates or disclaims.
 
 | # | Tool | Backed by (already exists) | Why it matters |
 |---|---|---|---|
-| T1.2 | `get_customer_360` | `cs_account_health.compute_health_score`, `CustomerConcern` / `CustomerCommitment` (`models.py:3428,3520`), `CustomerNote` / `CustomerWarning`, `Customer.pipeline_status` | "What's going on with Acme?" is the most natural question a user will ask and Linda currently answers it by full-text searching transcripts. |
-| T1.3 | `get_profile` | `ClientProfile` / `AgentProfile` / `ManagerProfile` / `BusinessProfile` (`models.py:2142-2206`), exposed at `api/profiles.py` | **The orchestrator's four profile trees are the product's brain and chat cannot see them.** Opus spends nightly + weekly cycles maintaining them (`orchestrator.py:1-22`) and no runtime reader consumes them for chat. **Constraint:** `api/profiles.py:1-17` enforces role-scoped access (agent → own; manager → reports; admin → all). The tool layer scopes by tenant only today, so this tool must carry that RBAC itself — see §3. |
+| T1.2 ✅ | `get_customer_360` | `cs_account_health.compute_health_score`, `CustomerConcern` / `CustomerCommitment` (`models.py:3428,3520`), `CustomerNote` / `CustomerWarning`, `Customer.pipeline_status` | "What's going on with Acme?" is the most natural question a user will ask and Linda currently answers it by full-text searching transcripts. |
+| T1.3 ✅ | `get_profile` | `ClientProfile` / `AgentProfile` / `ManagerProfile` / `BusinessProfile` (`models.py:2142-2206`), exposed at `api/profiles.py` | **The orchestrator's four profile trees are the product's brain and chat cannot see them.** Opus spends nightly + weekly cycles maintaining them (`orchestrator.py:1-22`) and no runtime reader consumes them for chat. **Constraint:** `api/profiles.py:1-17` enforces role-scoped access (agent → own; manager → reports; admin → all). The tool layer scopes by tenant only today, so this tool must carry that RBAC itself — see §3. |
 | T1.4 | `get_scorecard` | `InteractionScore`, `ScorecardTemplate` (`models.py:1358,1370`), `scorecard_service.py` | Directly promised by the system prompt. |
-| T1.5 | `search_knowledge_base` | `kb_document_retrieval.retrieve` (Qdrant RAG) | The tenant's own policies/playbooks. Without it Linda answers "what's our refund policy" from the base model — the highest-risk hallucination surface in the product. |
-| T1.6 | `get_team_metrics` | `tenant_insights_service.aggregate_tenant_period`, `api/analytics.py` | "How did the team do this week?" today costs N searches and blows the 5-cycle cap. Aggregates must be one tool call, not a loop. |
+| T1.5 ✅ | `search_knowledge_base` | `kb_document_retrieval.retrieve` (Qdrant RAG) | The tenant's own policies/playbooks. Without it Linda answers "what's our refund policy" from the base model — the highest-risk hallucination surface in the product. |
+| T1.6 ✅ | `get_team_metrics` | `tenant_insights_service.aggregate_tenant_period`, `api/analytics.py` | "How did the team do this week?" today costs N searches and blows the 5-cycle cap. Aggregates must be one tool call, not a loop. |
 | T1.7 | `list_manager_alerts` | `ManagerAlert` (`models.py:3223`), fed by `anomaly_detector.py` + `campaign_monitor.py` | The proactive detectors already fire; chat can't read what they found, so the user hears about an alert in Slack and Linda knows nothing about it. |
 | T1.8 | `get_action_plan` / `list_action_plans` | `ActionPlan` / `ActionStep` (`models.py:898,965`) | Linda can *create* a plan (`propose_action_plan`) and then cannot read it back. Write-only is not a workflow. |
 
@@ -317,10 +339,11 @@ with Tier 1; the write edge should be async, off the response path.
   reach must not widen autonomy in the same change.
 - **RBAC belongs in the tool layer.** Chat tools scope by tenant only
   (`linda_agent.py:450`, `:489`). That matches the interactions REST surface, but
-  **not** `api/profiles.py:1-17`, which is role-scoped. T1.3 must re-implement
-  those rules; and note `AgentContext.user` is `None` for API-key callers
-  (`api/chat.py:41-60`), so a role-scoped tool needs a defined answer for that case
-  — deny is the safe default.
+  **not** `api/profiles.py:1-17`, which is role-scoped. ✅ Handled for T1.3 by
+  *importing* those gates rather than re-implementing them — a second copy of a
+  security rule eventually disagrees with the first. **Superseded:** the original
+  text here said API-key callers (`AgentContext.user is None`) should be denied;
+  see the correction under Tier 1 — they are tenant-admin, per `auth.py:512`.
 - **Sync/threaded tools must re-arm the tenant GUC.** `_fetch_sent_gmail_sync`
   (`linda_agent.py:594-716`) is the correct precedent: `tenant_context(...)` around
   every query, or RLS fails closed.
@@ -341,8 +364,10 @@ with Tier 1; the write edge should be async, off the response path.
 2. ~~**T1.1 `resolve_entity`**~~ — ✅ done on this branch.
 3. ~~**G2 retrieval subgraph**~~ — ✅ done on this branch; the wide reads can now
    land without each one bloating the window.
-4. **Tier 1 reads**, prioritised `get_customer_360` → `search_knowledge_base` →
-   `get_profile` → `get_team_metrics` → the rest.
+4. ~~**Tier 1 reads**, prioritised `get_customer_360` → `search_knowledge_base` →
+   `get_profile` → `get_team_metrics`~~ — ✅ those four done on this branch; the
+   remaining three (`get_scorecard`, `list_manager_alerts`, `get_action_plan`)
+   are held until tool-selection accuracy has been observed at 16 tools.
 5. **T2.2 `propose_step_dispatch`** — real-world effect through the existing
    governed dispatch path.
 6. **G5 outcome loop** — start recording outcomes as soon as writes have effect,

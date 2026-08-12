@@ -32,7 +32,12 @@ from backend.app.models import (
     WriteProposal,
 )
 from backend.app.config import get_settings
-from backend.app.services import campaign_stats, linda_context, linda_entity_lookup
+from backend.app.services import (
+    campaign_stats,
+    linda_context,
+    linda_entity_lookup,
+    linda_reads,
+)
 from backend.app.services.llm_client import get_async_anthropic
 from backend.app.services.model_router import (
     CacheableBlock,
@@ -82,6 +87,12 @@ PRODUCT_KNOWLEDGE = (
     "- Interactions: list of calls with sentiment, summary, topics\n"
     "- Action Items: follow-ups extracted from calls, with assignee and "
     "due date\n"
+    "- Accounts: each customer has a health score, renewal date, open "
+    "concerns and commitments — read them with get_customer_360\n"
+    "- Knowledge base: the tenant's own policies, playbooks and product "
+    "docs — search them with search_knowledge_base\n"
+    "- Profiles: nightly-maintained reads on each client, agent, manager "
+    "and the business as a whole — read them with get_profile\n"
     "- Scorecards: QA rubrics applied to each call (Sales QA, CS QA)\n"
     "- Snippets: short clips of notable moments (pricing pushback, "
     "competitor mention, positive feedback)\n"
@@ -114,6 +125,20 @@ PRODUCT_KNOWLEDGE = (
     "answer (e.g. outreach campaigns have a member funnel and daily send "
     "quota; external ones don't). Only tell the user there are no campaigns "
     "after list_campaigns actually returns an empty list.\n\n"
+    "## Answering about accounts, policy, people, and totals\n"
+    "Reach for the tool that answers the question in one call, not for a "
+    "search you then have to interpret:\n"
+    "- \"What's going on with <account>?\" → resolve_entity, then "
+    "get_customer_360. Don't reconstruct an account's state from "
+    "transcripts when the account read exists.\n"
+    "- \"What's our policy/process on X?\" → search_knowledge_base. If it "
+    "returns nothing relevant, say the knowledge base doesn't cover it. "
+    "Never answer a company-policy question from general knowledge — you "
+    "will sound equally confident when you're wrong, and the user can't "
+    "tell the difference.\n"
+    "- \"How is <person> doing?\" / coaching questions → get_profile.\n"
+    "- \"How did we do this week/month?\" → get_team_metrics, and quote its "
+    "numbers rather than counting search results yourself.\n\n"
     "## Names vs ids — how to act on a person or company\n"
     "Users talk in names (\"Acme\", \"Dana\", \"the pricing thread\"); every "
     "write tool takes an id. Bridge the two with resolve_entity BEFORE "
@@ -342,6 +367,104 @@ TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "get_customer_360",
+        "description": (
+            "Everything the platform knows about one account right now: "
+            "health score, onboarding and renewal, outreach pipeline state, "
+            "open concerns, open commitments made to them, key contacts, and "
+            "the most recent interactions. Use this for \"what's going on "
+            "with Acme?\", \"are we at risk with them?\", or before drafting "
+            "anything customer-facing — it is far better than searching "
+            "transcripts one at a time. Get the customer_id from "
+            "resolve_entity. The health score is the last one the CS job "
+            "computed, not a live number; don't present it as of-this-second."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "customer_id": {"type": "string", "description": "Customer UUID from resolve_entity."},
+                "interaction_limit": {
+                    "type": "integer",
+                    "description": "How many recent interactions to include (default 5, max 15).",
+                },
+            },
+            "required": ["customer_id"],
+        },
+    },
+    {
+        "name": "search_knowledge_base",
+        "description": (
+            "Search the tenant's OWN knowledge base — their policies, "
+            "playbooks, product docs and onboarding material. Use this "
+            "whenever the user asks what the company's position, policy, "
+            "process or documented answer is (\"what's our refund policy?\", "
+            "\"how do we handle a security questionnaire?\"). Answer from "
+            "the returned excerpts and cite the document title; if nothing "
+            "relevant comes back, say the knowledge base doesn't cover it "
+            "rather than answering from general knowledge — a confident "
+            "wrong policy is worse than no answer."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to look up."},
+                "limit": {"type": "integer", "description": "Max documents (default 5, max 10)."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_profile",
+        "description": (
+            "Read one of the four profiles the nightly orchestrator "
+            "maintains: 'client' (an account contact — entity_id is a "
+            "contact id), 'agent' (a rep — entity_id is a user id), "
+            "'manager' (entity_id is a user id), or 'business' (the whole "
+            "tenant; no entity_id). Each returns a summary, metrics, the "
+            "top factors driving it, and recommendations. Use it for "
+            "\"how is Dana doing?\", \"where are we losing deals?\", or "
+            "coaching questions. Get ids from resolve_entity. Access "
+            "depends on who is asking — if the result says you don't have "
+            "access, tell the user plainly and don't try another route."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "enum": ["client", "agent", "manager", "business"],
+                },
+                "entity_id": {
+                    "type": "string",
+                    "description": "Contact id for 'client', user id for 'agent'/'manager'. Omit for 'business'.",
+                },
+            },
+            "required": ["kind"],
+        },
+    },
+    {
+        "name": "get_team_metrics",
+        "description": (
+            "Tenant-wide numbers for a period: interaction volume, average "
+            "sentiment, average QA score, average rapport, open and overdue "
+            "action items, at-risk and upsell counts, plus percent changes "
+            "against the previous window of the same length. Use this for "
+            "\"how did we do this week/month?\" or any question about "
+            "totals or trends — one call, instead of searching interactions "
+            "and counting them yourself."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "period": {
+                    "type": "string",
+                    "enum": ["7d", "14d", "30d", "60d", "90d"],
+                    "description": "Look-back window. Defaults to 30d.",
+                },
+            },
+        },
+    },
+    {
         "name": "propose_action_item",
         "description": (
             "Propose a follow-up task attached to a specific call or email. "
@@ -515,6 +638,10 @@ READ_TOOLS = {
     "list_campaigns",
     "get_campaign_stats",
     "list_campaign_replies",
+    "get_customer_360",
+    "search_knowledge_base",
+    "get_profile",
+    "get_team_metrics",
 }
 DRAFT_TOOLS = {
     "propose_action_item",
@@ -957,6 +1084,22 @@ async def dispatch_tool(
         return await _exec_get_campaign_stats(ctx, args)
     if name == "list_campaign_replies":
         return await _exec_list_campaign_replies(ctx, args)
+    if name == "get_customer_360":
+        return await linda_reads.customer_360(
+            ctx.db, ctx.tenant, args.get("customer_id"), args.get("interaction_limit", 5)
+        )
+    if name == "search_knowledge_base":
+        return await linda_reads.search_knowledge_base(
+            ctx.db, ctx.tenant, str(args.get("query") or ""), args.get("limit", 5)
+        )
+    if name == "get_profile":
+        return await linda_reads.get_profile(
+            ctx.db, ctx.tenant, ctx.user, str(args.get("kind") or ""), args.get("entity_id")
+        )
+    if name == "get_team_metrics":
+        return await linda_reads.team_metrics(
+            ctx.db, ctx.tenant, str(args.get("period") or "30d")
+        )
     if name in DRAFT_TOOLS:
         return await _create_proposal(ctx, DRAFT_KIND_BY_TOOL[name], args)
     return {"error": f"unknown tool: {name}"}

@@ -61,6 +61,8 @@ TEXT_CAPS = {
     "description": 300,
     "raw_text": 400,
     "transcript": 400,
+    "excerpt": 600,
+    "quote": 300,
 }
 
 # The list-valued key each tool's rows live under.
@@ -73,6 +75,8 @@ ROW_KEYS = (
     "replies",
     "snippets",
     "interactions",
+    "documents",
+    "recent_interactions",
 )
 
 # Never drop below this many rows deterministically — a result of one row
@@ -81,6 +85,13 @@ MIN_ROWS = 3
 
 # Tools whose rows are prose and may be model-condensed. Everything else
 # is deterministic-only by design (see the module docstring).
+#
+# Note what is deliberately absent: campaign stats and metrics (a model
+# must never restate a number) and ``search_knowledge_base``. KB excerpts
+# are the *grounding* for policy answers — a condense pass that drops a
+# qualifying clause turns "refunds within 30 days, excluding annual plans"
+# into a confident wrong policy. Their excerpts are already capped, so
+# deterministic handling is both safer and sufficient.
 CONDENSABLE = frozenset({"search_interactions", "search_sent_email"})
 
 # Per-row identity keys, in priority order — used to verify a condensed

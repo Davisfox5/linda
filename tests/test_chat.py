@@ -152,6 +152,12 @@ def test_tool_schema_exposes_expected_reads_and_drafts():
         "list_campaigns",
         "get_campaign_stats",
         "list_campaign_replies",
+        # Tier 1 reads — surfaces PRODUCT_KNOWLEDGE already advertised but
+        # the registry couldn't reach (docs/plans/ask-linda-agentic-gaps.md).
+        "get_customer_360",
+        "search_knowledge_base",
+        "get_profile",
+        "get_team_metrics",
     }
     assert DRAFT_TOOLS == {
         "propose_action_item",
