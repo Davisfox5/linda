@@ -121,7 +121,10 @@ EXPECTED_FRAMES = {
 def _frames_emitted() -> set:
     agent = AGENT.read_text(encoding="utf-8")
     chat = CHAT.read_text(encoding="utf-8")
-    frames = set(re.findall(r'yield \{"type": "([a-z_]+)"', agent))
+    # ``\s*`` so reformatting a yield across lines doesn't silently empty
+    # this set — an empty set would make the subset assertions below pass
+    # while checking nothing.
+    frames = set(re.findall(r'yield \{\s*"type": "([a-z_]+)"', agent))
     frames.update(re.findall(r'yield _sse\(\s*\{\s*"type": "([a-z_]+)"', chat))
     frames.update(re.findall(r'_sse\(\{"type": "([a-z_]+)"', chat))
     return frames
@@ -150,12 +153,39 @@ def test_draft_tools_emit_proposal_instead_of_tool_result():
     refactor that unifies the two branches has to confront it."""
     agent = AGENT.read_text(encoding="utf-8")
     assert 'if block.name in DRAFT_TOOLS and "proposal_id" in result:' in agent
-    assert 'yield {"type": "proposal", "proposal": result}' in agent
+    assert re.search(r'yield \{\s*"type": "proposal"', agent)
+    assert '"proposal": result' in agent
 
 
 @pytest.mark.parametrize(
-    "field",
-    ['"type": "text", "delta"', '"type": "tool_use", "tool"', '"type": "tool_result", "tool"'],
+    "pattern",
+    [
+        r'"type": "text", "delta"',
+        r'"type": "tool_use",\s*"tool_use_id": block\.id,\s*"tool": block\.name',
+        r'"type": "tool_result",\s*"tool_use_id": block\.id,\s*"tool": block\.name',
+        r'"type": "proposal",\s*"tool_use_id": block\.id',
+    ],
 )
-def test_frame_field_names_are_unchanged(field):
-    assert field in AGENT.read_text(encoding="utf-8")
+def test_frame_field_names_are_unchanged(pattern):
+    assert re.search(pattern, AGENT.read_text(encoding="utf-8")), pattern
+
+
+def test_every_tool_frame_carries_a_correlation_id():
+    """Flex pairs tool_use to its answer on ``tool_use_id``. A tool_use with
+    no id, or an answer that drops it, silently breaks that pairing — the
+    stream still parses, the console just stops matching calls to results."""
+    agent = AGENT.read_text(encoding="utf-8")
+    for frame in ("tool_use", "tool_result", "proposal"):
+        block = re.search(
+            r'yield \{\s*"type": "%s".*?\}' % frame, agent, re.DOTALL
+        )
+        assert block, f"no {frame} frame found"
+        assert '"tool_use_id": block.id' in block.group(0), (
+            f"{frame} frame is missing tool_use_id"
+        )
+
+
+def test_doc_tells_consumers_to_pair_on_the_id():
+    doc = _doc_text()
+    assert "`tool_use_id`" in doc
+    assert "arrival order" in doc  # the caveat about not relying on it

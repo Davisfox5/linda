@@ -1440,9 +1440,13 @@ async def run_chat_turn(
 
     Event shapes:
       {"type": "text", "delta": str}            — assistant text delta
-      {"type": "tool_use", "tool": str, "input": dict}
-      {"type": "tool_result", "tool": str, "result": dict}
-      {"type": "proposal", "proposal": dict}    — write proposal created
+      {"type": "tool_use", "tool_use_id": str, "tool": str, "input": dict}
+      {"type": "tool_result", "tool_use_id": str, "tool": str, "result": dict}
+      {"type": "proposal", "tool_use_id": str, "proposal": dict}
+
+    ``tool_use_id`` is the correlation id: every ``tool_use`` is answered by
+    exactly one ``tool_result`` OR one ``proposal`` carrying the same id, so a
+    consumer can pair them without relying on arrival order.
       {"type": "done"}                          — end of turn
       {"type": "error", "message": str}
     """
@@ -1558,7 +1562,12 @@ async def run_chat_turn(
         for block in final.content:
             if block.type != "tool_use":
                 continue
-            yield {"type": "tool_use", "tool": block.name, "input": block.input}
+            yield {
+                "type": "tool_use",
+                "tool_use_id": block.id,
+                "tool": block.name,
+                "input": block.input,
+            }
             try:
                 result = await dispatch_tool(ctx, block.name, dict(block.input))
             except Exception as exc:
@@ -1567,8 +1576,13 @@ async def run_chat_turn(
 
             if block.name in DRAFT_TOOLS and "proposal_id" in result:
                 # Proposals are small, and their payload is what the user
-                # confirms — never reshape them.
-                yield {"type": "proposal", "proposal": result}
+                # confirms — never reshape them. The correlation id rides
+                # alongside the payload rather than inside it for that reason.
+                yield {
+                    "type": "proposal",
+                    "tool_use_id": block.id,
+                    "proposal": result,
+                }
             else:
                 # Fit the result to the working-context budget BEFORE it
                 # enters history or the transcript: whatever we persist here
@@ -1582,7 +1596,12 @@ async def run_chat_turn(
                     router=router,
                     condense_enabled=settings.LINDA_CONDENSE_ENABLED,
                 )
-                yield {"type": "tool_result", "tool": block.name, "result": result}
+                yield {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "tool": block.name,
+                    "result": result,
+                }
 
             tool_results.append(
                 {
