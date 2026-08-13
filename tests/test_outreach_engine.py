@@ -771,3 +771,107 @@ def test_gate_disabled_keeps_old_auto_approve_behavior(db, fake_sender, monkeypa
     db.refresh(member)
     assert member.state == "queued"
     assert member.draft_status == "approved"
+
+
+# ── outreach.drafts_ready (webhook 2.6) ────────────────────────────────
+
+
+def _stub_draft(monkeypatch):
+    """Deterministic draft body — these tests are about the webhook, not copy."""
+    monkeypatch.setattr(
+        scheduler.drafts_mod,
+        "generate_member_draft",
+        lambda campaign, config, member, customer, step_index=None: {
+            "subject": "Hello",
+            "body": "Saw your gym - impressive!",
+            "facts": {},
+        },
+    )
+
+
+def _captured_dispatch(monkeypatch):
+    """Record dispatch_sync calls instead of writing delivery rows."""
+    calls = []
+
+    def _fake(session, tenant_id, event, payload, **kw):
+        calls.append((event, payload))
+        return []
+
+    monkeypatch.setattr(scheduler, "dispatch_sync", _fake)
+    return calls
+
+
+def test_draft_generation_announces_drafts_ready(db, fake_sender, monkeypatch):
+    tenant, campaign, (member,) = _seed(db)
+    _reset_for_generation(db, member)
+    _stub_draft(monkeypatch)
+    calls = _captured_dispatch(monkeypatch)
+
+    scheduler.generate_drafts_for_campaign(db, tenant, campaign)
+
+    ready = [p for e, p in calls if e == "outreach.drafts_ready"]
+    assert len(ready) == 1
+    assert ready[0]["campaign_id"] == str(campaign.id)
+    assert ready[0]["count"] == 1
+    assert ready[0]["name"] == campaign.name
+
+
+def test_drafts_ready_fires_once_per_batch_not_once_per_draft(
+    db, fake_sender, monkeypatch
+):
+    tenant, campaign, members = _seed(db, n_members=3)
+    for m in members:
+        _reset_for_generation(db, m)
+    _stub_draft(monkeypatch)
+    calls = _captured_dispatch(monkeypatch)
+
+    scheduler.generate_drafts_for_campaign(db, tenant, campaign)
+
+    ready = [p for e, p in calls if e == "outreach.drafts_ready"]
+    assert len(ready) == 1
+    assert ready[0]["count"] == 3
+
+
+def test_no_drafts_ready_when_nothing_is_awaiting_approval(
+    db, fake_sender, monkeypatch
+):
+    """Auto mode self-approves, so the review queue stays empty and a
+    consumer must not be told there is work to do."""
+    from tests.test_outreach_copy_gate import send_ready_draft
+
+    tenant, campaign, (member,) = _seed(db, config={**CONFIG, "mode": "auto"})
+    _reset_for_generation(db, member)
+    monkeypatch.setattr(
+        scheduler.drafts_mod,
+        "generate_member_draft",
+        lambda campaign, config, member, customer, step_index=None: {
+            "subject": "Hello",
+            "body": send_ready_draft("Gym 0"),
+            "facts": {},
+        },
+    )
+    calls = _captured_dispatch(monkeypatch)
+
+    scheduler.generate_drafts_for_campaign(db, tenant, campaign)
+
+    assert member.state == "queued"
+    assert [p for e, p in calls if e == "outreach.drafts_ready"] == []
+
+
+def test_a_webhook_failure_never_breaks_draft_generation(
+    db, fake_sender, monkeypatch
+):
+    tenant, campaign, (member,) = _seed(db)
+    _reset_for_generation(db, member)
+    _stub_draft(monkeypatch)
+
+    def _boom(*a, **kw):
+        raise RuntimeError("webhook backend down")
+
+    monkeypatch.setattr(scheduler, "dispatch_sync", _boom)
+
+    out = scheduler.generate_drafts_for_campaign(db, tenant, campaign)
+
+    assert out["generated"] == 1
+    db.refresh(member)
+    assert member.state == "needs_approval"

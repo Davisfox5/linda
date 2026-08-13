@@ -298,6 +298,10 @@ async def test_webhook(
     dispatcher = WebhookDispatcher()
     test_payload = {
         "event": "webhook.test",
+        # Test pings have no delivery row, but receivers that dedupe on
+        # ``event_id`` shouldn't have to special-case them. Each ping is a
+        # genuinely distinct event, so a fresh id is the honest value.
+        "event_id": str(uuid.uuid4()),
         "webhook_id": str(webhook.id),
         "tenant_id": str(webhook.tenant_id),
         "message": "This is a test ping from LINDA.",

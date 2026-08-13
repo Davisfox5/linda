@@ -218,16 +218,21 @@ def dispatch_sync(
     )
 
     deliveries: List[WebhookDelivery] = []
-    full_payload = _envelope(event, tenant_id, payload)
 
     for wh in webhooks:
         if not _event_matches(list(wh.events or []), event):
             continue
+        # Mint the id up front so the envelope can carry it. Letting the
+        # column default assign it at flush would mean rewriting the
+        # payload afterwards, and the signature is computed over the
+        # stored payload — one value, written once, is the safer shape.
+        delivery_id = uuid.uuid4()
         delivery = WebhookDelivery(
+            id=delivery_id,
             webhook_id=wh.id,
             tenant_id=tenant_id,
             event=event,
-            payload=full_payload,
+            payload=_envelope(event, tenant_id, payload, event_id=delivery_id),
             status="pending",
             attempts=[],
             attempt_count=0,
@@ -292,16 +297,19 @@ async def emit_event(
     webhooks = list((await db.execute(stmt)).scalars().all())
 
     deliveries: List[WebhookDelivery] = []
-    full_payload = _envelope(event, tenant_id, payload)
 
     for wh in webhooks:
         if not _event_matches(list(wh.events or []), event):
             continue
+        # See dispatch_sync: the id is minted here so the envelope and the
+        # row carry the same value without a post-flush rewrite.
+        delivery_id = uuid.uuid4()
         delivery = WebhookDelivery(
+            id=delivery_id,
             webhook_id=wh.id,
             tenant_id=tenant_id,
             event=event,
-            payload=full_payload,
+            payload=_envelope(event, tenant_id, payload, event_id=delivery_id),
             status="pending",
             attempts=[],
             attempt_count=0,
@@ -512,19 +520,33 @@ async def deliver_one(db: AsyncSession, delivery_id: uuid.UUID) -> Dict[str, Any
 
 
 def _envelope(
-    event: str, tenant_id: uuid.UUID, payload: Dict[str, Any]
+    event: str,
+    tenant_id: uuid.UUID,
+    payload: Dict[str, Any],
+    event_id: Optional[uuid.UUID] = None,
 ) -> Dict[str, Any]:
     """Wrap the caller-provided payload in a consistent outer envelope.
 
     Keeps receivers decoupled from whether we add fields like ``event``
     or ``tenant_id`` — they can read off the envelope.
+
+    ``event_id`` is the delivery row's UUID, mirroring the
+    ``X-Linda-Delivery`` header into the body so receivers that only see
+    the parsed JSON (queue workers, proxies that strip headers) can still
+    dedupe.  It is stable across retries of the same delivery, and it is
+    per-delivery: one logical event fanned out to two endpoints carries
+    two ids, which is correct for per-receiver dedupe but must not be
+    used to correlate the same event across receivers.
     """
-    return {
+    body = {
         "event": event,
         "tenant_id": str(tenant_id),
         "emitted_at": datetime.now(timezone.utc).isoformat(),
         "data": payload,
     }
+    if event_id is not None:
+        body["event_id"] = str(event_id)
+    return body
 
 
 # ── Backwards-compat class API used by the existing api/webhooks.py ──

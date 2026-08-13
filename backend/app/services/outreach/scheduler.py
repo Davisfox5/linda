@@ -304,7 +304,47 @@ def generate_drafts_for_campaign(
             member.state = "needs_approval"
         generated += 1
         session.commit()
+
+    _emit_drafts_ready(session, tenant, campaign)
     return {"generated": generated, "failed": failed, "considered": len(members)}
+
+
+def _emit_drafts_ready(session: Session, tenant: Tenant, campaign: Campaign) -> None:
+    """Announce that a campaign has drafts waiting for a human.
+
+    Emitted after the whole fan-out rather than per member, so a consumer
+    gets one signal per batch instead of one per draft. The count is read
+    back from the DB rather than accumulated in the loop: members parked by
+    an earlier run are equally waiting, and a consumer asking "how many need
+    review" wants the true queue depth, not this run's delta.
+
+    No approval is implied. Drafts still require a human — see the
+    no-autonomous-sending invariant in docs/ask-linda-integration.md.
+    """
+    try:
+        pending = int(
+            session.execute(
+                select(func.count(OutreachMember.id)).where(
+                    OutreachMember.campaign_id == campaign.id,
+                    OutreachMember.state == "needs_approval",
+                )
+            ).scalar_one()
+            or 0
+        )
+        if pending <= 0:
+            return
+        dispatch_sync(
+            session,
+            tenant.id,
+            "outreach.drafts_ready",
+            {
+                "campaign_id": str(campaign.id),
+                "name": campaign.name,
+                "count": pending,
+            },
+        )
+    except Exception:
+        logger.warning("outreach.drafts_ready webhook enqueue failed", exc_info=True)
 
 
 # ── The tick ────────────────────────────────────────────────────────────

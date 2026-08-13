@@ -61,7 +61,7 @@ from backend.app.models import (
     OutreachMember,
     Tenant,
 )
-from backend.app.services import campaign_stats
+from backend.app.services import campaign_stats, mcp_tools
 from backend.app.services.email.outbound import resolve_email_integration
 from backend.app.services.outreach.common import (
     PIPELINE_STATUSES,
@@ -458,17 +458,65 @@ async def _campaign_out(
     )
 
 
+async def _external_dnc(
+    server: "mcp_tools.McpServer",
+    handle: Optional[str],
+    cache: Dict[str, "mcp_tools.DncVerdict"],
+) -> Optional["mcp_tools.DncVerdict"]:
+    """Suppression verdict for one prospect handle, memoized per enrollment.
+
+    Returns ``None`` when there is nothing checkable — no domain and no email
+    means the external source has no handle to answer on, and a prospect with
+    neither is already stopped by ``no_contact_email``.
+    """
+    if not handle:
+        return None
+    key = normalize_domain(handle) or handle.strip().lower()
+    if not key:
+        return None
+    if key not in cache:
+        cache[key] = await mcp_tools.check_do_not_contact(server, key)
+    return cache[key]
+
+
 async def _enroll_prospects(
     db: AsyncSession,
     tenant: Tenant,
     campaign: Campaign,
     prospect_ids: List[uuid.UUID],
 ) -> tuple:
-    """Create members for prospects. Returns (added, [MemberSkipOut])."""
+    """Create members for prospects. Returns (added, [MemberSkipOut]).
+
+    Three suppression gates, cheapest first:
+
+    1. LINDA's own ``do_not_contact`` / pipeline status.
+    2. ``metadata.inbound`` — someone who filled in a form asking to be
+       contacted is not a cold-outreach target. Cross-repo invariant; see
+       docs/ask-linda-integration.md.
+    3. An external suppression source (Flex's ``check_do_not_contact``),
+       when the tenant has one registered. This is the only gate that knows
+       a business is already a paying customer of the tenant's own product.
+
+    Gate 3 **fails closed**: a prospect whose check could not be completed is
+    skipped with ``dnc_check_unavailable`` rather than enrolled. Enrollment is
+    a human action that can be retried in a minute; an email to an existing
+    customer cannot be recalled.
+    """
     added = 0
     skipped: List[MemberSkipOut] = []
     if not prospect_ids:
         return added, skipped
+
+    # Resolve the external suppression source once per enrollment, not per
+    # prospect. Absent (the common case) leaves the loop exactly as it was.
+    dnc_server = None
+    try:
+        dnc_server = mcp_tools.find_server_with_tool(
+            await mcp_tools.list_servers(db, tenant.id), mcp_tools.DNC_TOOL
+        )
+    except Exception:
+        logger.exception("failed to load MCP servers for enrollment DNC check")
+    dnc_cache: Dict[str, mcp_tools.DncVerdict] = {}
 
     existing = set(
         (
@@ -492,6 +540,11 @@ async def _enroll_prospects(
         if customer.do_not_contact or customer.pipeline_status == "do_not_contact":
             skipped.append(MemberSkipOut(prospect_id=pid, reason="do_not_contact"))
             continue
+        if (customer.metadata_ or {}).get("inbound") is True:
+            # They raised their hand. Cold sequences are for people who
+            # didn't, and mixing the two is how a warm lead gets a cold open.
+            skipped.append(MemberSkipOut(prospect_id=pid, reason="inbound_lead"))
+            continue
         contact = (
             await db.execute(
                 select(Contact)
@@ -507,6 +560,26 @@ async def _enroll_prospects(
         if contact is None:
             skipped.append(MemberSkipOut(prospect_id=pid, reason="no_contact_email"))
             continue
+        if dnc_server is not None:
+            handle = customer.domain or contact.email
+            verdict = await _external_dnc(dnc_server, handle, dnc_cache)
+            if verdict is not None and not verdict.available:
+                logger.warning(
+                    "external DNC check unavailable for %s (%s); not enrolling",
+                    handle, verdict.error,
+                )
+                skipped.append(
+                    MemberSkipOut(prospect_id=pid, reason="dnc_check_unavailable")
+                )
+                continue
+            if verdict is not None and verdict.blocked:
+                logger.info(
+                    "external DNC blocked %s: %s", handle, "; ".join(verdict.reasons)
+                )
+                skipped.append(
+                    MemberSkipOut(prospect_id=pid, reason="external_do_not_contact")
+                )
+                continue
         db.add(
             OutreachMember(
                 tenant_id=tenant.id,

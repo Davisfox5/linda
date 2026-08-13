@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,25 +82,48 @@ OutcomeType = Literal[
 
 
 class OutcomeEvent(BaseModel):
-    """One observed downstream event tied to an interaction.
+    """One observed downstream event, attributed to an interaction, a
+    customer, or both.
 
     ``event_id`` is strongly recommended: if present, idempotency is
     enforced per ``(tenant_id, event_id)``.  Without it, the caller is
     responsible for avoiding duplicates.
 
-    ``customer_id`` is optional first-class customer attribution.  When
-    present it is validated against the interaction's resolved customer
-    (mismatches are rejected, never silently mis-attributed) and
-    persisted on the ingestion row for per-customer aggregation.
+    **Exactly one of ``interaction_id`` / ``customer_id`` is required.**
+    Interaction-level events are the common case and feed the calibrator
+    through ``InteractionFeatures.proxy_outcomes``.  Customer-level
+    events exist for conversions with no originating call or email — a
+    self-serve signup, for instance — where demanding an
+    ``interaction_id`` would force the caller to invent one or drop the
+    event entirely.  They are recorded and deduped, but deliberately do
+    NOT write to ``proxy_outcomes``: attributing a customer-level
+    conversion to whichever interactions happen to exist would teach the
+    calibrator a causal link nobody verified.  See
+    ``docs/outcomes.md`` for how the two levels differ downstream.
+
+    ``customer_id`` alongside an ``interaction_id`` is first-class
+    customer attribution: it is validated against the interaction's
+    resolved customer (mismatches are rejected, never silently
+    mis-attributed) and persisted on the ingestion row.
     """
 
-    interaction_id: uuid.UUID
+    interaction_id: Optional[uuid.UUID] = None
     outcome_type: OutcomeType
     value: Optional[float] = None
     occurred_at: Optional[datetime] = None
     metadata: Optional[Dict[str, Any]] = None
     event_id: Optional[str] = Field(default=None, max_length=128)
     customer_id: Optional[uuid.UUID] = None
+
+    @model_validator(mode="after")
+    def _requires_a_subject(self) -> "OutcomeEvent":
+        """An event with neither id attributes to nothing and is silently
+        useless downstream — reject it at the door instead."""
+        if self.interaction_id is None and self.customer_id is None:
+            raise ValueError(
+                "either interaction_id or customer_id is required"
+            )
+        return self
 
     @field_validator("occurred_at")
     @classmethod
@@ -261,34 +284,67 @@ async def _apply_events(
             await _deadletter(db, tenant_id, "future_timestamp", event, headers_snapshot)
             continue
 
-        # Resolve interaction.  interaction_id is required on the schema
-        # but we re-check tenant scoping here so cross-tenant writes die
-        # on the floor with a clear dead-letter reason.
-        stmt = select(InteractionFeatures).where(
-            InteractionFeatures.interaction_id == event.interaction_id,
-            InteractionFeatures.tenant_id == tenant_id,
-        )
-        features_row = (await db.execute(stmt)).scalar_one_or_none()
-        if features_row is None:
-            dropped += 1
-            await _deadletter(db, tenant_id, "interaction_not_found", event, headers_snapshot)
-            continue
-
-        # Optional first-class customer attribution — reject a claim that
-        # contradicts the interaction's resolved customer rather than
-        # silently mis-attributing the outcome.
-        if event.customer_id is not None:
-            claim_error = await _customer_claim_error(db, tenant_id, event)
-            if claim_error is not None:
+        if event.interaction_id is None:
+            # Customer-level attribution — a conversion with no
+            # originating interaction.  There is no InteractionFeatures
+            # row to write to, but the customer must still exist in this
+            # tenant: an orphan ingestion row keyed to a typo'd id is
+            # worse than a dead-letter, because nothing ever joins to it
+            # and the miss is invisible.
+            owner = (
+                await db.execute(
+                    select(Customer.id).where(
+                        Customer.id == event.customer_id,
+                        Customer.tenant_id == tenant_id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if owner is None:
                 dropped += 1
-                await _deadletter(db, tenant_id, claim_error, event, headers_snapshot)
+                await _deadletter(
+                    db, tenant_id, "customer_not_found", event, headers_snapshot
+                )
                 if strict_customer:
                     await db.commit()
                     raise HTTPException(
                         status_code=422,
-                        detail=f"customer_id rejected: {claim_error}",
+                        detail="customer_id rejected: customer_not_found",
                     )
                 continue
+            features_row = None
+        else:
+            # Resolve interaction.  We re-check tenant scoping here so
+            # cross-tenant writes die on the floor with a clear
+            # dead-letter reason.
+            stmt = select(InteractionFeatures).where(
+                InteractionFeatures.interaction_id == event.interaction_id,
+                InteractionFeatures.tenant_id == tenant_id,
+            )
+            features_row = (await db.execute(stmt)).scalar_one_or_none()
+            if features_row is None:
+                dropped += 1
+                await _deadletter(
+                    db, tenant_id, "interaction_not_found", event, headers_snapshot
+                )
+                continue
+
+            # Optional first-class customer attribution — reject a claim
+            # that contradicts the interaction's resolved customer rather
+            # than silently mis-attributing the outcome.
+            if event.customer_id is not None:
+                claim_error = await _customer_claim_error(db, tenant_id, event)
+                if claim_error is not None:
+                    dropped += 1
+                    await _deadletter(
+                        db, tenant_id, claim_error, event, headers_snapshot
+                    )
+                    if strict_customer:
+                        await db.commit()
+                        raise HTTPException(
+                            status_code=422,
+                            detail=f"customer_id rejected: {claim_error}",
+                        )
+                    continue
 
         # Idempotency check.
         if event.event_id:
@@ -304,24 +360,29 @@ async def _apply_events(
         # Apply to features.  Multiple events of the same outcome_type
         # append so late corrections (churned then retained, etc.) stay
         # visible to the calibrator.
-        outcomes = dict(features_row.proxy_outcomes or {})
-        record = {
-            "value": event.value,
-            "occurred_at": (event.occurred_at or now).isoformat(),
-            "metadata": event.metadata or {},
-        }
-        if event.customer_id is not None:
-            record["customer_id"] = str(event.customer_id)
-        existing_value = outcomes.get(event.outcome_type)
-        if existing_value is None:
-            outcomes[event.outcome_type] = record
-        elif isinstance(existing_value, list):
-            existing_value.append(record)
-            outcomes[event.outcome_type] = existing_value
-        else:
-            outcomes[event.outcome_type] = [existing_value, record]
-        features_row.proxy_outcomes = outcomes
-        flag_modified(features_row, "proxy_outcomes")
+        #
+        # Customer-level events skip this entirely — see OutcomeEvent's
+        # docstring.  They are durable and deduped via the ingestion row
+        # below, but they do not become interaction-level evidence.
+        if features_row is not None:
+            outcomes = dict(features_row.proxy_outcomes or {})
+            record = {
+                "value": event.value,
+                "occurred_at": (event.occurred_at or now).isoformat(),
+                "metadata": event.metadata or {},
+            }
+            if event.customer_id is not None:
+                record["customer_id"] = str(event.customer_id)
+            existing_value = outcomes.get(event.outcome_type)
+            if existing_value is None:
+                outcomes[event.outcome_type] = record
+            elif isinstance(existing_value, list):
+                existing_value.append(record)
+                outcomes[event.outcome_type] = existing_value
+            else:
+                outcomes[event.outcome_type] = [existing_value, record]
+            features_row.proxy_outcomes = outcomes
+            flag_modified(features_row, "proxy_outcomes")
 
         # Record the ingestion (enforces idempotency via unique index).
         ingestion = OutcomeEventIngestion(
@@ -346,12 +407,23 @@ async def _apply_events(
 def _autogen_event_id(event: OutcomeEvent) -> str:
     """Fingerprint an ``event_id``-less payload so retries dedupe.
 
-    Hash of ``(interaction_id, outcome_type, occurred_at)`` — if a caller
+    Hash of ``(subject, outcome_type, occurred_at)`` — if a caller
     re-sends the same event without an explicit ``event_id`` we still
     catch it.  Collisions across legitimately distinct events with the
     same key tuple are possible but expected to be vanishingly rare.
+
+    The interaction-level key format is frozen: changing it would remint
+    every fingerprint and let an in-flight retry of an ``event_id``-less
+    payload land a second time.  Customer-level events get their own
+    ``customer:`` namespace so the two can never collide.
     """
-    key = f"{event.interaction_id}|{event.outcome_type}|{event.occurred_at or ''}"
+    if event.interaction_id is not None:
+        key = f"{event.interaction_id}|{event.outcome_type}|{event.occurred_at or ''}"
+    else:
+        key = (
+            f"customer:{event.customer_id}|{event.outcome_type}|"
+            f"{event.occurred_at or ''}"
+        )
     return "auto:" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:32]
 
 

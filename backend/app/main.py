@@ -139,6 +139,7 @@ from backend.app.api.comments import router as comments_router  # noqa: E402
 from backend.app.api.contacts import router as contacts_router  # noqa: E402
 from backend.app.api.analytics import router as analytics_router  # noqa: E402
 from backend.app.api.knowledge_base import router as kb_router  # noqa: E402
+from backend.app.api.mcp_servers import router as mcp_servers_router  # noqa: E402
 from backend.app.api.scorecards import router as scorecards_router  # noqa: E402
 from backend.app.api.action_items import router as action_items_router  # noqa: E402
 from backend.app.api.action_plans import router as action_plans_router  # noqa: E402
@@ -191,6 +192,7 @@ app.include_router(contacts_router, prefix=settings.API_V1_PREFIX, tags=["contac
 app.include_router(scorecards_router, prefix=settings.API_V1_PREFIX, tags=["scorecards"])
 app.include_router(analytics_router, prefix=settings.API_V1_PREFIX, tags=["analytics"])
 app.include_router(kb_router, prefix=settings.API_V1_PREFIX, tags=["knowledge-base"])
+app.include_router(mcp_servers_router, prefix=settings.API_V1_PREFIX, tags=["mcp-servers"])
 from fastapi import Depends as _Depends  # noqa: E402
 from backend.app.auth import require_role as _require_role  # noqa: E402
 
