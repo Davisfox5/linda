@@ -58,9 +58,15 @@ router = APIRouter()
 
 
 # ── Enum of accepted outcome types ───────────────────────────────────────
-# Keep this list aligned with ``services/calibration.py`` —
-# ``DEFAULT_CALIBRATION_CONFIGS`` consumes every key the calibrator can
-# map onto a positive/negative outcome.
+# Accepting a type here does NOT mean anything learns from it.
+# ``services/calibration.py`` decides which keys become calibration labels,
+# and several accepted types deliberately reach no scorer — ``deal_won``
+# among them. ``tests/test_outcome_types_reach_a_scorer.py`` holds the
+# authoritative list of those and fails if a new type joins them silently.
+#
+# (This comment previously claimed DEFAULT_CALIBRATION_CONFIGS consumed
+# every key here. It did not, and had not for some time — which is exactly
+# the kind of drift the guard test now catches.)
 
 OutcomeType = Literal[
     "customer_replied",
