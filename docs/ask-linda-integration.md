@@ -26,17 +26,17 @@ lacks it gets `402` before the stream opens, not an error frame.
 |---|---|---|
 | `conversation` | `conversation_id` | Always first. The id to reuse for follow-up turns. |
 | `text` | `delta` | An incremental chunk of assistant prose. Concatenate in arrival order. |
-| `tool_use` | `tool`, `input` | The agent is calling a tool. `tool` is the name, `input` the argument object. |
-| `tool_result` | `tool`, `result` | That tool returned. `result` is the (context-fitted) result object. |
-| `proposal` | `proposal` | A draft tool staged a write for human confirmation. |
+| `tool_use` | `tool_use_id`, `tool`, `input` | The agent is calling a tool. `tool` is the name, `input` the argument object. |
+| `tool_result` | `tool_use_id`, `tool`, `result` | That tool returned. `result` is the (context-fitted) result object. |
+| `proposal` | `tool_use_id`, `proposal` | A draft tool staged a write for human confirmation. |
 | `error` | `message` | Turn failed. Terminal. |
 | `done` | — | Turn complete. Terminal. |
 
 ```
 data: {"type":"conversation","conversation_id":"3f2a...-...."}
 data: {"type":"text","delta":"Looking at Acme's recent calls"}
-data: {"type":"tool_use","tool":"search_interactions","input":{"query":"Acme pricing"}}
-data: {"type":"tool_result","tool":"search_interactions","result":{"results":[...]}}
+data: {"type":"tool_use","tool_use_id":"toolu_01A…","tool":"search_interactions","input":{"query":"Acme pricing"}}
+data: {"type":"tool_result","tool_use_id":"toolu_01A…","tool":"search_interactions","result":{"results":[...]}}
 data: {"type":"done"}
 ```
 
@@ -54,10 +54,18 @@ calling the tool and then apparently never finishing — the most confusing
 possible rendering of the most consequential action the agent takes. Render
 `proposal` explicitly, and treat it as "awaiting human decision".
 
-**3. There is no correlation id on the wire.** `tool_use_id` exists
-internally but is not emitted. Pair a `tool_result` to its `tool_use` by
-arrival order within the turn. If you need hard pairing, ask — emitting the
-id is a small change, not a redesign.
+**3. Pair on `tool_use_id`, not arrival order.** Every `tool_use` carries a
+`tool_use_id`, and is answered by exactly one frame bearing the same id —
+either a `tool_result` or (for draft tools) a `proposal`. Pair on the id.
+
+Arrival order still happens to work today, because tool calls within a turn
+are dispatched sequentially. Do not depend on that: it is an implementation
+detail of the dispatch loop, not a contract, and concurrent dispatch would
+break an order-based parser silently while leaving the id-based one correct.
+
+> *Changed 2026-08-13.* This section previously said no correlation id was
+> emitted. It now is, on all three frames. Consumers keyed on arrival order
+> keep working — the field is additive — but should move to the id.
 
 ### Truncation
 
