@@ -14,6 +14,7 @@ delivered):
 ```json
 {
   "event": "customer.churned",          // always a non-empty string
+  "event_id": "<uuid>",                  // per-delivery; matches X-Linda-Delivery
   "tenant_id": "<uuid>",
   "emitted_at": "2026-07-02T18:00:00+00:00",
   "data": { ... }                        // always a JSON object
@@ -22,6 +23,29 @@ delivered):
 
 Consumers can rely on `event` being a string and `data` being an object; a
 `null`, bare-array, or event-less body is a contract violation on our side.
+
+### `event_id` — the idempotency key
+
+`event_id` is the delivery row's UUID, mirroring the `X-Linda-Delivery`
+header into the body so a receiver that only ever sees parsed JSON (a queue
+worker, a proxy that strips headers) can dedupe without falling back to
+hashing the body. **Prefer it over a body hash**: a hash is correct for a
+byte-identical redelivery but silently collapses two genuinely distinct
+events that happen to serialize identically.
+
+Two properties to build against:
+
+- **Stable across retries.** It is written into the stored payload once, at
+  enqueue, and every attempt for that delivery sends the same value.
+- **Per-delivery, not per-event.** One logical event fanned out to two
+  registered endpoints produces two delivery rows and therefore two
+  `event_id`s. That is correct for per-receiver dedupe and wrong for
+  correlating the same event across receivers — use fields inside `data`
+  (e.g. `data.alert_id`) for that.
+
+Test pings carry an `event_id` too. They have no delivery row behind them,
+so each ping gets a fresh id — correct, since each ping really is a distinct
+event.
 
 ## Headers
 
@@ -60,7 +84,21 @@ consumers moved to v2; verify `X-Linda-Signature-V2` only.
 
 5 attempts with exponential backoff (10s, 1m, 5m, 30m, 2h), then the
 delivery is dead-lettered. Any 2xx acknowledges a delivery. Dedupe on
-`X-Linda-Delivery` if your handler is not idempotent.
+`event_id` (or the equivalent `X-Linda-Delivery` header) if your handler is
+not idempotent.
+
+**Every non-2xx response is retried**, including `503`. A receiver that
+cannot durably store a delivery should return 5xx rather than ack it —
+acking an event you failed to persist loses it permanently, and we have no
+way to know.
+
+**But do not lean on retries indefinitely.** A circuit breaker sets
+`Webhook.active = false` after **10 consecutive failures** across that
+endpoint's deliveries, and dead-letters everything still pending for it. A
+sustained outage on the receiving side therefore does not merely delay
+delivery — it eventually *disables the webhook*, and re-enabling is a manual
+action via `/webhooks`. The full retry window is ~2h40m; an outage longer
+than that needs a backfill, not patience.
 
 ## Test pings
 
