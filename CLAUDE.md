@@ -1,5 +1,20 @@
 # CLAUDE.md — working conventions for this repo
 
+## How to report back (standing preference)
+
+**Any answer longer than a few paragraphs gets written in plain language.** Not a
+jargon summary bolted onto a technical wall — the whole thing, plain, first time,
+without being asked.
+
+- Short sentences. Say what broke and what it means for the product.
+- Skip file paths, symbol names, and API terminology unless they're the point.
+- Lead with the outcome, then what changed, then what's left.
+- Corrections and dropped work get stated plainly — "I said X, I was wrong, here's
+  why" — not buried.
+- Anything that changes live customer behavior: ask before flipping it on.
+
+Technical depth on request, not by default.
+
 Architecture lives in [ARCHITECTURE.md](ARCHITECTURE.md). For agent/LLM-infra
 decisions, follow [agent-infrastructure-knowledge-base.md](agent-infrastructure-knowledge-base.md)
 and the audit in [docs/agent-infra-audit.md](docs/agent-infra-audit.md).
