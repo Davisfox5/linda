@@ -200,6 +200,25 @@ per (recipient_id, url).
 Campaign-driven transitions are monotonic (never move a prospect
 backwards); `manual` transitions may go anywhere.
 
+### `outreach.drafts_ready`
+
+```json
+{
+  "campaign_id": "<uuid>", "name": "July gyms sweep", "count": 34
+}
+```
+
+Fired once per draft-generation fan-out, not once per draft. `count` is the
+campaign's current `needs_approval` depth read back from the database — the
+true size of the review queue, including members parked by an earlier run,
+not just the drafts this run produced.
+
+**This event does not mean anything was sent or approved.** Drafts wait for a
+human; approval is the authorisation to email a real business and is never
+automatic. Consumers should treat this as "there is review work waiting",
+which is what makes it a replacement for polling
+`GET /outreach/campaigns/{id}/members?state=needs_approval`.
+
 ### `campaign.completed`
 
 ```json
