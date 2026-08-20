@@ -56,14 +56,26 @@ async def lifespan(app: FastAPI):
     # SIPREC idle reaper: finalises sessions whose Redis state
     # expired because the SRS died without recording.stopped. Runs in
     # every worker; reaping is idempotent so the overlap is harmless.
+    #
+    # Gated, and off by default. This loop issues a Postgres query every
+    # SIPREC_REAP_INTERVAL_S seconds for as long as the process lives.
+    # On Neon that is the difference between an idle deployment costing
+    # nothing and costing a compute-hour every hour: scale-to-zero needs
+    # an interval with no client connections at all, and a 60s poll never
+    # leaves one. The SRS process group is commented out in fly.toml and
+    # fly.production.toml, so until it is resurrected this reaper has no
+    # sessions to reap and only keeps the database awake.
     import asyncio as _asyncio
+
+    reap_task = None
 
     async def _siprec_reap_loop() -> None:
         from backend.app.services.telephony.siprec.bridge import get_bridge
 
         log = logging.getLogger(__name__)
+        interval = float(settings.SIPREC_REAP_INTERVAL_S)
         while True:
-            await _asyncio.sleep(60.0)
+            await _asyncio.sleep(interval)
             try:
                 reaped = await get_bridge().reap_stale_sessions()
                 if reaped:
@@ -71,12 +83,19 @@ async def lifespan(app: FastAPI):
             except Exception:
                 log.exception("SIPREC reap loop iteration failed")
 
-    reap_task = _asyncio.get_event_loop().create_task(_siprec_reap_loop())
+    if settings.SIPREC_REAPER_ENABLED:
+        reap_task = _asyncio.get_event_loop().create_task(_siprec_reap_loop())
+    else:
+        logging.getLogger(__name__).info(
+            "SIPREC reaper disabled (SIPREC_REAPER_ENABLED=false); "
+            "no periodic database polling from this process"
+        )
 
     yield
 
     # ── Shutdown ──
-    reap_task.cancel()
+    if reap_task is not None:
+        reap_task.cancel()
     await engine.dispose()
 
 

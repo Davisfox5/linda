@@ -298,6 +298,20 @@ class Settings(BaseSettings):
     # BOTH this is True AND the tenant has explicitly set an auto mode
     # for that step's action_class (default absent = 'manual').
     AUTO_EXECUTION_ENABLED: bool = False
+    # SIPREC idle reaper. The reaper finalises RFC 7866 sessions whose
+    # Redis state expired without a recording.stopped, and it polls
+    # Postgres on a fixed interval forever. The SRS process group is
+    # commented out in both fly.toml and fly.production.toml, so with
+    # this False the loop never starts and never opens a connection.
+    #
+    # This is a cost control, not just a tidy-up: on Neon, scale-to-zero
+    # requires a window with NO client connections. A query every
+    # SIPREC_REAP_INTERVAL_S seconds makes that window unreachable, so an
+    # idle deployment burns compute around the clock for a feature that
+    # is not deployed. Turn this on in the same change that resurrects
+    # the SRS process group.
+    SIPREC_REAPER_ENABLED: bool = False
+    SIPREC_REAP_INTERVAL_S: float = 60.0
     # Conservative per-tenant cap on real/shadow dispatches per beat
     # tick, so a policy misconfiguration (or a burst of newly-ready
     # steps) can't fan out unbounded sends in one run.
